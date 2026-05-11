@@ -1,0 +1,42 @@
+# ===== Node.js =====
+node_modules/
+dist/
+*.js.map
+
+# ===== TypeScript =====
+*.tsbuildinfo
+
+# ===== Logs & debug output =====
+*.log
+output.txt
+probe_output.txt
+
+# ===== Probe / scratch scripts =====
+probe_chat*.mjs
+probe_pickers.mjs
+summarize_dom.py
+
+# ===== Flutter =====
+flutter_client/.dart_tool/
+flutter_client/.flutter-plugins
+flutter_client/.flutter-plugins-dependencies
+flutter_client/.packages
+flutter_client/build/
+flutter_client/android/
+flutter_client/ios/
+flutter_client/linux/
+flutter_client/macos/
+flutter_client/windows/
+flutter_client/web/
+flutter_client/pubspec.lock
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.suo
+*.user

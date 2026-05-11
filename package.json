@@ -1,0 +1,24 @@
+{
+	"name": "copilot-mirror-bridge",
+	"version": "0.1.0",
+	"description": "Node.js CDP Bridge for Copilot Mirror – relays VS Code Copilot Chat to Flutter via WebSocket",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "tsc",
+		"start": "node --experimental-specifier-resolution=node dist/bridge.js",
+		"dev": "npx tsx src/bridge.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"chrome-remote-interface": "^0.33.2",
+		"ws": "^8.18.1"
+	},
+	"devDependencies": {
+		"@types/chrome-remote-interface": "^0.33.0",
+		"@types/node": "^22.13.0",
+		"@types/ws": "^8.18.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5.7.0"
+	}
+}

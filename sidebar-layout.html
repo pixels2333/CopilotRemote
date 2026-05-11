@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copilot Mirror — 侧边栏采集布局示意</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1e1e1e;
+    display: flex;
+    justify-content: center;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  /* Simulated VS Code right sidebar (auxiliarybar) */
+  .auxiliarybar {
+    width: 440px;
+    background: #252526;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+    border: 1px solid #3c3c3c;
+  }
+
+  /* Title bar */
+  .composite-title {
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    background: #2d2d2d;
+    border-bottom: 1px solid #3c3c3c;
+    font-size: 13px;
+    color: #cccccc;
+    gap: 8px;
+  }
+  .composite-title .codicon {
+    width: 20px; height: 20px;
+    background: #6366f1;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #fff;
+  }
+
+  /* Pane body */
+  .pane-body {
+    background: #1e1e1e;
+  }
+
+  /* Agent sessions container */
+  .agent-sessions {
+    padding: 4px 0;
+  }
+
+  /* ── Message rows ── */
+  .monaco-list-row {
+    padding: 6px 14px 10px;
+    transition: background 0.1s;
+  }
+  .monaco-list-row.request {
+    background: #1a1a2e;
+  }
+  .monaco-list-row.response {
+    background: #1e1e1e;
+  }
+  .monaco-list-row.response.focused {
+    background: #1e1e28;
+    border-left: 3px solid #6366f1;
+  }
+
+  .monaco-tl-contents {
+    position: relative;
+  }
+
+  /* Role label */
+  .role-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 4px;
+  }
+  .role-badge.user { color: #4fc3f7; }
+  .role-badge.assistant { color: #a78bfa; }
+  .role-badge .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block;
+  }
+  .role-badge.user .dot { background: #4fc3f7; }
+  .role-badge.assistant .dot { background: #a78bfa; }
+
+  /* Block types */
+
+  /* Text / Markdown */
+  .block-text {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    padding: 2px 0;
+  }
+  .block-text .caption {
+    font-size: 10px;
+    color: #6366f1;
+    background: rgba(99,102,241,0.15);
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 3px;
+    margin-bottom: 2px;
+  }
+
+  /* Thinking */
+  .block-thinking {
+    margin: 6px 0;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(6,182,212,0.08));
+    border: 1px solid rgba(99,102,241,0.2);
+    overflow: hidden;
+  }
+  .block-thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: #a78bfa;
+    font-weight: 600;
+  }
+  .block-thinking-header .icon {
+    width: 14px; height: 14px;
+    background: #6366f1;
+    border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #fff;
+  }
+  .block-thinking-body {
+    padding: 0 10px 8px;
+    font-size: 12px;
+    color: #999;
+    line-height: 1.5;
+  }
+
+  /* Code */
+  .block-code {
+    margin: 6px 0;
+    border-radius: 8px;
+    background: #1a1a1a;
+    border: 1px solid #3c3c3c;
+    overflow: hidden;
+  }
+  .block-code-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 10px;
+    background: #252525;
+    font-size: 11px;
+    color: #888;
+  }
+  .block-code-body {
+    padding: 8px 10px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #d4d4d4;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* Tool call */
+  .block-tool {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(76,175,80,0.08);
+    border: 1px solid rgba(76,175,80,0.3);
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px;
+  }
+  .block-tool .icon { color: #4caf50; }
+  .block-tool .name { color: #4caf50; font-weight: 600; }
+
+  /* Capture annotation */
+  .capture-badge {
+    font-size: 9px;
+    padding: 0 5px;
+    border-radius: 3px;
+    display: inline-block;
+    margin-left: 6px;
+  }
+  .capture-badge.yes { background: rgba(76,175,80,0.2); color: #81c784; }
+  .capture-badge.no { background: rgba(255,152,0,0.2); color: #ffb74d; }
+
+  /* Legend */
+  .legend {
+    padding: 10px 14px;
+    background: #2d2d2d;
+    border-top: 1px solid #3c3c3c;
+    font-size: 11px;
+    color: #aaa;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .legend-item .badge {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+  }
+  .badge.text { background: #6366f1; }
+  .badge.think { background: #a78bfa; }
+  .badge.code { background: #4caf50; }
+  .badge.tool { background: #ff9800; }
+
+  .divider { border: none; border-top: 1px solid #333; margin: 0; }
+
+  /* Section label */
+  .section-label {
+    padding: 6px 14px;
+    font-size: 10px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Drop shadow for input area */
+  .input-area {
+    padding: 8px 12px 12px;
+    background: #252526;
+    border-top: 1px solid #3c3c3c;
+  }
+  .input-area .editor-sim {
+    background: #1e1e1e;
+    border: 1px solid #3c3c3c;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #666;
+    min-height: 36px;
+  }
+  .not-captured {
+    opacity: 0.4;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+
+<div class="auxiliarybar">
+
+  <!-- Title bar -->
+  <div class="composite-title">
+    <div class="codicon">💬</div>
+    <span>聊天</span>
+  </div>
+
+  <!-- Pane body -->
+  <div class="pane-body">
+    <div class="agent-sessions">
+
+      <!-- ═══ SECTION LABEL ═══ -->
+      <div class="section-label">📥 采集的消息行（.monaco-list-row）</div>
+
+      <!-- ── Row: User request ── -->
+      <div class="monaco-list-row request">
+        <div class="monaco-tl-contents">
+          <div class="role-badge user"><span class="dot"></span> 用户 <span class="capture-badge yes">role: user</span></div>
+          <div class="block-text">
+            <span class="caption">📄 text block</span><br>
+            把这个方案整理成接口定义。
+          </div>
+        </div>
+        <div style="font-size:10px;color:#444;margin-top:2px;border-top:1px dashed #333;padding-top:2px;">
+          <span class="capture-badge yes">✅ textContent → message.content</span>
+          <span class="capture-badge yes">✅ role=user → message.role</span>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <!-- ── Row: Assistant response (rich) ── -->
+      <div class="monaco-list-row response focused">
+        <div class="monaco-tl-contents">
+
+          <div class="role-badge assistant"><span class="dot"></span> Copilot <span class="capture-badge yes">role: assistant</span></div>
+
+          <!-- Thinking block -->
+          <div class="block-thinking">
+            <div class="block-thinking-header">
+              <div class="icon">🧠</div>
+              Thinking <span class="capture-badge yes">type: thinking</span>
+            </div>
+            <div class="block-thinking-body">
+              用户想要将之前讨论的内容整理成接口定义。我需要先检查已有的协议类型…
+              <span style="font-size:10px;color:#666">← textContent → block.content</span>
+            </div>
+          </div>
+
+          <!-- Text block -->
+          <div class="block-text">
+            <span class="caption">📄 text block</span>
+            可以，整体架构建议分为四层：<br>
+            1. <strong>传输层</strong> — WebSocket JSON 协议<br>
+            2. <strong>模型层</strong> — Envelope / Message / Block<br>
+            3. <strong>状态层</strong> — 不可变 ChatState<br>
+            4. <strong>渲染层</strong> — 组件化 UI<br><br>
+            以下是各层的接口定义…
+          </div>
+
+          <!-- Code block -->
+          <div class="block-code">
+            <div class="block-code-header">
+              <span>📘 typescript <span class="capture-badge yes">language</span></span>
+              <span class="capture-badge yes">type: code_block</span>
+            </div>
+            <div class="block-code-body">interface ChatState {
+  messages: MirrorMessage[];
+  connectionStatus: ConnectionStatus;
+  sessionId?: string;
+  lastSeq: number;
+  isSending: boolean;
+  errorMessage?: string;
+}             </div>
+            <div style="font-size:10px;color:#444;padding:2px 10px 4px;border-top:1px solid #333;">
+              <span class="capture-badge yes">✅ textContent → block.content</span>
+            </div>
+          </div>
+
+          <!-- Tool call -->
+          <div class="block-tool">
+            <div class="icon">⚡</div>
+            <div>
+              <span class="name">readFile</span>
+              <span class="capture-badge yes">type: tool_call</span>
+              <span class="capture-badge yes">state: succeeded</span>
+              <div style="font-size:11px;color:#aaa;margin-top:2px">
+                读取了 src/protocol.ts → 已返回 312 行
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /monaco-tl-contents -->
+        <div style="font-size:10px;color:#444;margin-top:2px;border-top:1px dashed #333;padding-top:2px;">
+          <span class="capture-badge yes">✅ monaco-tl-contents → 子节点遍历</span>
+          <span class="capture-badge yes">✅ 5 种 block 各类型独立传输</span>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <!-- ── Row: Simple assistant ── -->
+      <div class="monaco-list-row response">
+        <div class="monaco-tl-contents">
+          <div class="role-badge assistant"><span class="dot"></span> Copilot <span class="capture-badge yes">role: assistant</span></div>
+          <div class="block-text">
+            <span class="caption">📄 text block</span>
+            好的，已根据你的要求更新了代码。
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /agent-sessions -->
+  </div><!-- /pane-body -->
+
+  <!-- ═══ NOT CAPTURED area ═══ -->
+  <div class="input-area">
+    <div style="font-size:10px;color:#555;margin-bottom:4px;">❌ 下方输入区域不采集</div>
+    <div class="editor-sim not-captured">
+      向 Copilot 提问…
+    </div>
+    <div style="display:flex;gap:4px;margin-top:6px;font-size:10px;color:#555;">
+      <span class="capture-badge no">不采集</span>
+      <span>textarea / .interactive-input-editor 的内容不会被读取</span>
+    </div>
+  </div>
+
+  <!-- ═══ Legend ═══ -->
+  <div class="legend">
+    <span style="color:#ccc;font-weight:600;margin-right:4px;">图例：</span>
+    <span class="legend-item"><span class="badge text"></span> text block</span>
+    <span class="legend-item"><span class="badge think"></span> thinking</span>
+    <span class="legend-item"><span class="badge code"></span> code_block</span>
+    <span class="legend-item"><span class="badge tool"></span> tool_call</span>
+    <span style="margin-left:8px;color:#81c784;">✅ = 采集传输</span>
+    <span style="color:#ffb74d;">❌ = 不采集</span>
+  </div>
+
+</div><!-- /auxiliarybar -->
+
+</body>
+</html>

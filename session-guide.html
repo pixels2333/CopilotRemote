@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Copilot Mirror — 会话连接说明</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111113;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    gap: 20px;
+  }
+
+  .container {
+    max-width: 800px;
+    width: 100%;
+  }
+
+  h1 {
+    color: #e4e4e7;
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: #71717a;
+    font-size: 14px;
+    margin-bottom: 20px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    padding: 8px 16px;
+    border-radius: 10px;
+    font-size: 13px;
+    background: #18181b;
+    color: #a1a1aa;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+  }
+  .tab:hover { border-color: #3f3f46; }
+  .tab.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+
+  .scene { display: none; }
+  .scene.active { display: block; }
+
+  /* ─── Diagram ─── */
+  .diagram {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .diagram-title {
+    font-size: 15px;
+    color: #e4e4e7;
+    font-weight: 600;
+    margin-bottom: 16px;
+  }
+
+  /* Topology nodes */
+  .topo-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 8px 0;
+  }
+  .node {
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    text-align: center;
+    min-width: 90px;
+  }
+  .node.pc { background: #1e1e2e; border: 1px solid #6366f1; color: #a78bfa; }
+  .node.bridge { background: #1c1c1f; border: 1px solid #27272a; color: #e4e4e7; }
+  .node.phone { background: #0f172a; border: 1px solid #3b82f6; color: #60a5fa; }
+  .node .label { font-size: 11px; opacity: 0.6; }
+  .arrow { color: #52525b; font-size: 20px; }
+  .arrow-label {
+    font-size: 10px;
+    color: #52525b;
+    text-align: center;
+    margin-top: -4px;
+  }
+
+  /* Info card */
+  .info-card {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-top: 8px;
+  }
+  .info-card h3 {
+    color: #e4e4e7;
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+  .info-card p, .info-card li {
+    color: #a1a1aa;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .info-card ul { padding-left: 18px; }
+  .info-card code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #a78bfa;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+  .info-card .tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+  .tag.green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag.blue { background: rgba(96,165,250,0.15); color: #60a5fa; }
+  .tag.purple { background: rgba(167,139,250,0.15); color: #a78bfa; }
+  .tag.amber { background: rgba(251,191,36,0.15); color: #fbbf24; }
+
+  .divider { border: none; border-top: 1px solid #27272a; margin: 12px 0; }
+
+  /* Code block inline */
+  pre.code-inline {
+    background: #111113;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 13px;
+    color: #d4d4d4;
+    overflow-x: auto;
+    margin: 8px 0;
+    line-height: 1.6;
+  }
+
+  /* Connect steps */
+  .step-list {
+    counter-reset: step;
+    list-style: none;
+    padding: 0;
+  }
+  .step-list li {
+    counter-increment: step;
+    padding: 8px 0 8px 36px;
+    position: relative;
+    color: #a1a1aa;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .step-list li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 8px;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: #6366f1;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dot-green { display:inline-block; width:8px; height:8px; border-radius:50%; background:#4ade80; }
+  .dot-blue { display:inline-block; width:8px; height:8px; border-radius:50%; background:#60a5fa; }
+  .dot-gray { display:inline-block; width:8px; height:8px; border-radius:50%; background:#52525b; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>🔗 会话连接方式</h1>
+  <div class="subtitle">Copilot Mirror — 三种连接场景 + Flutter 端操作说明</div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('default')">🔄 默认单会话</button>
+    <button class="tab" onclick="switchTab('multi-vscode')">🖥️ 多 VS Code 窗口</button>
+    <button class="tab" onclick="switchTab('multi-tab')">📑 同窗口多标签</button>
+    <button class="tab" onclick="switchTab('flutter')">📱 Flutter 操作</button>
+  </div>
+
+  <!-- ════ 默认单会话 ════ -->
+  <div id="scene-default" class="scene active">
+
+    <div class="diagram">
+      <div class="diagram-title">🔄 默认架构：1 VS Code → 1 Bridge → N 个 Flutter 客户端</div>
+      <div class="topo-row">
+        <div class="node pc">VS Code<br><span class="label">CDP :9229</span></div>
+        <div><div class="arrow">⟷</div><div class="arrow-label">CDP</div></div>
+        <div class="node bridge">Node.js Bridge<br><span class="label">WS :17321</span></div>
+        <div><div class="arrow">⟷</div><div class="arrow-label">WS</div></div>
+        <div class="node phone">Flutter 客户端<br><span class="label">ws://127.0.0.1:17321/…</span></div>
+      </div>
+    </div>
+
+    <div class="info-card">
+      <h3>当前实现</h3>
+      <p>Bridge 在 <code>main.ts</code> 中启动，硬编码连接到 <code>127.0.0.1:9229</code> 上的 VS Code CDP，镜像其中的 Copilot Chat 会话。</p>
+      <p>Flutter 客户端通过 WebSocket 连接到 Bridge：</p>
+      <pre class="code-inline">chatProvider.notifier.connect('ws://127.0.0.1:17321/copilot-mirror/ws')</pre>
+      <p>所有 Flutter 客户端收到的是 <strong>同一个会话</strong> 的数据。</p>
+    </div>
+
+  </div>
+
+  <!-- ════ 多 VS Code 窗口 ════ -->
+  <div id="scene-multi-vscode" class="scene">
+
+    <div class="diagram">
+      <div class="diagram-title">🖥️ 多 VS Code 窗口：每个窗口起一个 Bridge</div>
+      <div class="topo-row" style="flex-direction:column;align-items:stretch;gap:16px;">
+
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
+          <div class="node pc">VS Code #1<br><span class="label">CDP :9229</span></div>
+          <div class="arrow">⟷</div>
+          <div class="node bridge">Bridge #1<br><span class="label">WS :17321</span></div>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
+          <div class="node pc">VS Code #2<br><span class="label">CDP :9230</span></div>
+          <div class="arrow">⟷</div>
+          <div class="node bridge">Bridge #2<br><span class="label">WS :17322</span></div>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;">
+          <div class="node pc">VS Code #3<br><span class="label">CDP :9231</span></div>
+          <div class="arrow">⟷</div>
+          <div class="node bridge">Bridge #3<br><span class="label">WS :17323</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="info-card">
+      <h3>如何实现</h3>
+      <p>每个 VS Code 窗口有自己的 CDP 端口（通过 <code>--remote-debugging-port</code> 指定）。每个 Bridge 实例连接一个 VS Code，用不同 WebSocket 端口避免冲突：</p>
+      <pre class="code-inline"># 终端 1 — 项目 A
+npx tsx src/main.ts --cdp-port 9229 --ws-port 17321
+
+# 终端 2 — 项目 B  
+npx tsx src/main.ts --cdp-port 9230 --ws-port 17322
+
+# 终端 3 — 项目 C
+npx tsx src/main.ts --cdp-port 9231 --ws-port 17323</pre>
+      <p>Flutter 端通过切换连接地址来切换"会话"（实际是切换 VS Code 窗口）：</p>
+      <pre class="code-inline">// 连接项目 A
+chatProvider.notifier.connect('ws://192.168.1.10:17321/copilot-mirror/ws')
+
+// 连接项目 B
+chatProvider.notifier.connect('ws://192.168.1.10:17322/copilot-mirror/ws')
+
+// 连接项目 C
+chatProvider.notifier.connect('ws://192.168.1.10:17323/copilot-mirror/ws')</pre>
+      <p><span class="tag amber">注意</span> <code>--cdp-port</code> 和 <code>--ws-port</code> 是 CLI 参数，目前 main.ts 从 <code>DEFAULT_BRIDGE_OPTIONS</code> 读取，需要扩展支持环境变量或命令行解析。</p>
+    </div>
+
+  </div>
+
+  <!-- ════ 同窗口多标签 ════ -->
+  <div id="scene-multi-tab" class="scene">
+
+    <div class="diagram">
+      <div class="diagram-title">📑 同窗口多对话标签（待实现）</div>
+      <div class="topo-row">
+        <div class="node pc">VS Code<br><span class="label">CDP :9229</span></div>
+        <div><div class="arrow">⟷</div><div class="arrow-label">CDP</div></div>
+        <div class="node bridge" style="min-width:150px;">Node.js Bridge<br><span class="label">标签切换逻辑</span></div>
+        <div><div class="arrow">⟷</div><div class="arrow-label">WS</div></div>
+        <div class="node phone">Flutter<br><span class="label">切换标签</span></div>
+      </div>
+    </div>
+
+    <div class="info-card">
+      <h3>现状</h3>
+      <p>Bridge 目前只关注 <strong>一个</strong> Copilot Chat 选项卡（通过 DOM 选择器定位当前可见的聊天面板）。VS Code 的 Copilot 在同一个 auxiliarybar 中仅有一个活跃的聊天视图，切换话题会替换当前内容。</p>
+
+      <hr class="divider">
+
+      <h3>如果要支持同窗口多标签</h3>
+      <p>需要 Bridge 端扩展能力：</p>
+      <ul>
+        <li>通过 CDP 的 <code>Runtime.evaluate</code> 调用 VS Code API 枚举所有聊天会话</li>
+        <li>暴露 <code>session.list</code> 和 <code>session.switch</code> 命令</li>
+        <li>Flutter 端发送 <code>client.command.switchSession</code> 切换 Bridge 监听的 DOM 目标</li>
+      </ul>
+
+      <pre class="code-inline">// 协议扩展（提议）
+type: 'session.list'
+→ 返回: [{ sessionId, title, lastActive }, ...]
+
+type: 'client.command.switchSession'
+payload: { sessionId: 'vscode-window-1/copilot-chat/2' }
+→ Bridge 切换 DOM 监听目标</pre>
+
+      <p><span class="tag amber">目前尚未实现</span> — 需要 VS Code Copilot Chat 的 API 支持来枚举和切换会话。</p>
+    </div>
+
+  </div>
+
+  <!-- ════ Flutter 操作 ════ -->
+  <div id="scene-flutter" class="scene">
+
+    <div class="diagram">
+      <div class="diagram-title">📱 Flutter 端切换连接的完整流程</div>
+    </div>
+
+    <div class="info-card">
+      <h3>现有的连接入口</h3>
+      <p>在 <code>chat_provider.dart</code> 中：</p>
+      <pre class="code-inline">// ChatNotifier.connect()
+Future<void> connect(String url, {String? authToken}) async {
+  state = state.copyWith(connectionStatus: ConnectionStatus.connecting);
+  _wsService?.dispose();
+  _wsService = WebSocketService(url: url, authToken: authToken);
+  // ...
+  await _wsService!.connect();
+}</pre>
+
+      <hr class="divider">
+
+      <h3>操作方式</h3>
+      <ol class="step-list">
+        <li>
+          <strong>启动 Node.js Bridge</strong><br>
+          在对应项目目录下运行 <code>npm run build</code> 后执行 <code>node dist/main.js</code>，Bridge 自动连接 VS Code CDP
+        </li>
+        <li>
+          <strong>Flutter 连接 Bridge</strong><br>
+          <pre class="code-inline" style="margin:4px 0;">chatProvider.notifier.connect('ws://192.168.1.10:17321/copilot-mirror/ws')</pre>
+          连接成功后收到 <code>server.hello</code>，显示 ✅ <span class="dot-green"></span> Connected
+        </li>
+        <li>
+          <strong>切换会话</strong><br>
+          调用 <code>chatProvider.notifier.disconnect()</code> 断开当前，再 <code>.connect(newUrl)</code> 连到另一个 Bridge
+        </li>
+        <li>
+          <strong>在聊天的过程中切换</strong><br>
+          同样先 <code>disconnect()</code> → <code>connect(newUrl)</code>，旧的聊天记录会被 <code>session.snapshot</code> 刷新
+        </li>
+      </ol>
+
+      <hr class="divider">
+
+      <h3>建议的 UI 交互（待实现）</h3>
+      <p>在 Flutter 中可增加：</p>
+      <ul>
+        <li><strong>设置页面</strong>：输入框修改 Bridge URL + 保存到本地存储</li>
+        <li><strong>连接扫码</strong>：Bridge 启动时打印二维码（含 URL + token），Flutter 扫码自动填入</li>
+        <li><strong>会话列表</strong>：如果 Bridge 实现了 <code>session.list</code>，在下拉列表中选择</li>
+        <li><strong>多连接</strong>：同时维持多个 Bridge 连接，TabBar 切换不同 VS Code 窗口</li>
+      </ul>
+
+      <hr class="divider">
+
+      <h3>实际使用示例</h3>
+      <pre class="code-inline">// 1. 在家连工作电脑
+chatProvider.notifier.connect(
+  'ws://192.168.1.10:17321/copilot-mirror/ws',
+  authToken: 'my-secret-token',
+);
+
+// 2. 切换到工作电脑的另一个项目（另一个 Bridge 实例）
+chatProvider.notifier.disconnect();
+chatProvider.notifier.connect(
+  'ws://192.168.1.10:17322/copilot-mirror/ws',
+  authToken: 'my-secret-token',
+);
+
+// 3. 出门切换到手机热点上的笔记本
+chatProvider.notifier.disconnect();
+chatProvider.notifier.connect(
+  'ws://192.168.1.20:17321/copilot-mirror/ws',
+  authToken: 'my-secret-token',
+);</pre>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div style="text-align:center;color:#52525b;font-size:12px;padding:20px 0 40px;">
+    总结：当前版本是 <strong>1 Bridge ↔ 1 VS Code</strong> 模式。<br>
+    切换"会话" = 切换 Flutter 连接的 WebSocket URL（指向不同的 Bridge 实例）。<br>
+    同窗口多标签切换需要额外协议扩展。
+  </div>
+
+</div>
+
+<script>
+function switchTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="'${id}'"]`).classList.add('active');
+  document.getElementById('scene-' + id).classList.add('active');
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Copilot Mirror — Flutter 最终效果评估</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    gap: 20px;
+  }
+
+  .phone-frame {
+    width: 390px;
+    max-width: 100%;
+    border-radius: 36px;
+    background: #131315;
+    box-shadow: 0 0 0 2px #333, 0 20px 60px rgba(0,0,0,0.8);
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ─── Status Bar ─── */
+  .status-bar {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 20px 0;
+    font-size: 12px;
+    color: #fff;
+    background: #131315;
+  }
+
+  /* ─── AppBar ─── */
+  .appbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid #2a2a2e;
+    background: #1c1c1f;
+  }
+  .appbar-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .appbar-title .logo {
+    width: 22px; height: 22px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #fff;
+  }
+  .status-dot {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #4ade80;
+  }
+  .status-dot .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 6px rgba(74,222,128,0.5);
+  }
+
+  /* ─── Connection Status Bar ─── */
+  .conn-bar {
+    padding: 4px 16px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.3s;
+  }
+  .conn-bar.connected { background: #166534; color: #bbf7d0; }
+  .conn-bar.connecting { background: #9a3412; color: #fed7aa; }
+  .conn-bar.disconnected { background: #374151; color: #d1d5db; }
+  .conn-bar.reconnecting { background: #9a3412; color: #fed7aa; }
+  .conn-bar.failed { background: #991b1b; color: #fecaca; }
+
+  /* ─── Chat Body ─── */
+  .chat-body {
+    height: 600px;
+    overflow-y: auto;
+    padding: 8px 12px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth;
+    background: #131315;
+  }
+  .chat-body::-webkit-scrollbar { width: 4px; }
+  .chat-body::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 2px; }
+
+  /* ─── Empty States ─── */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: #71717a;
+    padding: 40px 20px;
+  }
+  .empty-state .icon-big { font-size: 48px; opacity: 0.5; }
+  .empty-state .title { font-size: 16px; font-weight: 600; color: #a1a1aa; }
+  .empty-state .desc { font-size: 13px; text-align: center; line-height: 1.5; color: #71717a; }
+  .btn-connect {
+    margin-top: 8px;
+    padding: 10px 28px;
+    background: #6366f1;
+    border: none;
+    border-radius: 24px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ─── Messages ─── */
+  .msg-row {
+    display: flex;
+    flex-direction: column;
+    animation: fadeIn 0.25s ease;
+  }
+  .msg-row.user { align-items: flex-end; }
+  .msg-row.assistant { align-items: flex-start; }
+  .msg-row.system { align-items: center; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .bubble {
+    max-width: 82%;
+    border-radius: 16px;
+    padding: 10px 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    position: relative;
+  }
+  .msg-row.user .bubble {
+    background: #6366f1;
+    color: #fff;
+    border-radius: 16px 16px 4px 16px;
+  }
+  .msg-row.assistant .bubble {
+    background: #1e1e24;
+    color: #e4e4e7;
+    border: 1px solid #2a2a2e;
+    border-radius: 16px 16px 16px 4px;
+  }
+  .msg-row.system .bubble {
+    background: #27272a;
+    color: #a1a1aa;
+    font-size: 12px;
+    border-radius: 20px;
+    padding: 4px 16px;
+  }
+
+  .bubble-role {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #a78bfa;
+    margin-bottom: 4px;
+  }
+  .bubble-role .icon { font-size: 12px; }
+
+  /* ─── BLOCK: Text / Markdown ─── */
+  .block-text { font-size: 14px; line-height: 1.6; }
+  .block-text code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+  .block-text p { margin: 4px 0; }
+  .block-text h3 { font-size: 15px; margin: 8px 0 4px; color: #fff; }
+
+  /* ─── BLOCK: Thinking ─── */
+  .block-thinking {
+    margin: 4px 0;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(99,102,241,0.07), rgba(6,182,212,0.07));
+    border: 1px solid rgba(99,102,241,0.2);
+    overflow: hidden;
+  }
+  .block-thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #a78bfa;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .block-thinking-header .spin {
+    width: 12px; height: 12px;
+    border: 2px solid rgba(167,139,250,0.3);
+    border-top-color: #a78bfa;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .block-thinking-body {
+    padding: 0 10px 8px;
+    font-size: 12px;
+    color: #a1a1aa;
+    line-height: 1.6;
+  }
+
+  /* ─── BLOCK: Code ─── */
+  .block-code {
+    margin: 4px 0;
+    border-radius: 10px;
+    background: #18181b;
+    border: 1px solid #27272a;
+    overflow: hidden;
+  }
+  .block-code-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 10px;
+    background: #1f1f23;
+    font-size: 11px;
+    color: #a1a1aa;
+  }
+  .block-code-header .actions {
+    display: flex; gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #71717a;
+  }
+  .block-code-header .actions span:hover { color: #e4e4e7; }
+  .block-code-body {
+    padding: 8px 10px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #d4d4d4;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* ─── BLOCK: Tool Call ─── */
+  .block-tool {
+    margin: 4px 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(74,222,128,0.06);
+    border: 1px solid rgba(74,222,128,0.25);
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .block-tool .icon { color: #4ade80; font-size: 18px; line-height: 1; }
+  .block-tool .body { flex: 1; }
+  .block-tool .name { color: #4ade80; font-weight: 600; }
+  .block-tool .status { font-size: 11px; color: #71717a; }
+  .block-tool .summary { font-size: 12px; color: #a1a1aa; margin-top: 2px; }
+
+  /* ─── BLOCK: Artifact ─── */
+  .block-artifact {
+    margin: 4px 0;
+    padding: 10px;
+    border-radius: 10px;
+    background: rgba(251,191,36,0.06);
+    border: 1px solid rgba(251,191,36,0.25);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .block-artifact .icon { font-size: 20px; }
+  .block-artifact .info { flex: 1; }
+  .block-artifact .name { font-size: 13px; color: #e4e4e7; font-weight: 500; }
+  .block-artifact .uri { font-size: 11px; color: #71717a; }
+
+  /* ─── Composer ─── */
+  .composer {
+    padding: 8px 12px 12px;
+    background: #1c1c1f;
+    border-top: 1px solid #2a2a2e;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .composer-input {
+    flex: 1;
+    background: #1e1e24;
+    border: 1px solid #333;
+    border-radius: 20px;
+    padding: 10px 16px;
+    color: #e4e4e7;
+    font-size: 14px;
+    outline: none;
+    min-height: 40px;
+    max-height: 100px;
+    resize: none;
+    font-family: inherit;
+    line-height: 1.4;
+  }
+  .composer-input::placeholder { color: #52525b; }
+  .composer-input:disabled { opacity: 0.4; }
+  .composer-btn {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: #6366f1;
+    color: #fff;
+    font-size: 20px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+  .composer-btn:disabled { background: #3f3f46; cursor: not-allowed; }
+  .composer-btn:not(:disabled):hover { background: #4f46e5; }
+  .composer-btn.sending { animation: pulse 1s ease infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* ─── Scroll-to-bottom FAB ─── */
+  .fab-scroll {
+    position: absolute;
+    bottom: 72px;
+    right: 18px;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: #27272a;
+    border: 1px solid #3f3f46;
+    color: #d4d4d4;
+    font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+
+  /* ─── Error toast ─── */
+  .error-toast {
+    margin-bottom: 4px;
+    padding: 8px 14px;
+    background: #7f1d1d;
+    color: #fca5a5;
+    font-size: 13px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .error-toast button {
+    background: none; border: none; color: #fca5a5;
+    font-size: 16px; cursor: pointer;
+  }
+
+  /* ─── Section headers ─── */
+  .scene-label {
+    font-size: 12px;
+    color: #52525b;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 12px;
+  }
+
+  /* ─── Multi-scene selectors ─── */
+  .scene-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .scene-tab {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    background: #27272a;
+    color: #a1a1aa;
+    border: 1px solid transparent;
+    cursor: pointer;
+  }
+  .scene-tab.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+  .scene-tab:not(.active):hover { border-color: #52525b; }
+
+  .scene { display: none; }
+  .scene.active { display: block; }
+
+  .annotation {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #52525b;
+    text-align: center;
+  }
+  .annotation mark {
+    background: rgba(99,102,241,0.2);
+    color: #a78bfa;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  /* ─── Session Switch Button ─── */
+  .session-switch-btn {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    border: 1px solid #3f3f46;
+    background: transparent;
+    color: #a1a1aa;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .session-switch-btn:hover {
+    background: #27272a;
+    color: #e4e4e7;
+    border-color: #6366f1;
+  }
+
+  /* ─── Session Drawer Overlay ─── */
+  .drawer-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 10;
+    display: none;
+    animation: fadeInOverlay 0.2s ease;
+  }
+  .drawer-overlay.open { display: block; }
+  @keyframes fadeInOverlay { from { opacity: 0; } to { opacity: 1; } }
+
+  .drawer-panel {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    max-height: 60%;
+    background: #1c1c1f;
+    border-radius: 20px 20px 0 0;
+    z-index: 11;
+    display: none;
+    flex-direction: column;
+    animation: slideUp 0.25s ease;
+  }
+  .drawer-panel.open { display: flex; }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .drawer-handle {
+    width: 36px; height: 4px;
+    background: #52525b;
+    border-radius: 2px;
+    margin: 10px auto;
+  }
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px 8px;
+  }
+  .drawer-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e4e4e7;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .drawer-header h3 .icon { color: #6366f1; }
+  .drawer-new-btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: #6366f1;
+    border: none;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .drawer-new-btn:hover { background: #4f46e5; }
+  .drawer-divider { border: none; border-top: 1px solid #2a2a2e; margin: 0; }
+
+  .drawer-list { overflow-y: auto; padding: 4px 8px; }
+  .drawer-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .drawer-item:hover { background: rgba(99,102,241,0.1); }
+  .drawer-item.active { background: rgba(99,102,241,0.15); }
+  .drawer-item-icon {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+  .drawer-item-icon.active { background: rgba(99,102,241,0.2); color: #a78bfa; }
+  .drawer-item-icon.inactive { background: #27272a; color: #71717a; }
+  .drawer-item-info { flex: 1; min-width: 0; }
+  .drawer-item-title {
+    font-size: 14px;
+    color: #e4e4e7;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .drawer-item-title.active { font-weight: 600; }
+  .drawer-item-preview {
+    font-size: 12px;
+    color: #71717a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
+  .drawer-item-check {
+    color: #6366f1;
+    font-size: 18px;
+  }
+
+  /* ─── Session Switch Transition ─── */
+  .session-loading {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(19,19,21,0.85);
+    z-index: 5;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+  .session-loading.show { display: flex; }
+  .session-loading .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid #3f3f46;
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .session-loading .text { font-size: 14px; color: #a1a1aa; }
+
+  .session-toast {
+    position: absolute;
+    top: 80px; left: 12px; right: 12px;
+    background: #7f1d1d;
+    color: #fca5a5;
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 6;
+    animation: fadeIn 0.2s ease;
+  }
+  .session-toast.show { display: flex; }
+  .session-toast button {
+    background: none; border: none; color: #fca5a5;
+    font-size: 16px; cursor: pointer;
+  }
+
+  .switching-toast {
+    position: absolute;
+    top: 160px; left: 50%; transform: translateX(-50%);
+    background: #27272a;
+    color: #d4d4d4;
+    font-size: 13px;
+    padding: 8px 20px;
+    border-radius: 20px;
+    z-index: 6;
+    display: none;
+    animation: fadeIn 0.2s ease;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+  .switching-toast.show { display: block; }
+
+  /* ─── Agent Chip ─── */
+  .agent-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    border: 1px solid #3f3f46;
+    cursor: pointer;
+    font-size: 12px;
+    color: #e4e4e7;
+    transition: all 0.15s;
+  }
+  .agent-chip:hover { border-color: #6366f1; background: rgba(99,102,241,0.1); }
+  .agent-chip .chip-icon { font-size: 14px; color: #6366f1; }
+  .agent-chip .chip-arrow { font-size: 12px; color: #71717a; margin-left: 2px; }
+
+  /* ─── Agent Picker Panel ─── */
+  .agent-picker-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5); z-index: 10;
+    display: none; animation: fadeInOverlay 0.2s ease;
+  }
+  .agent-picker-overlay.open { display: block; }
+  .agent-picker-panel {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    max-height: 55%; background: #1c1c1f;
+    border-radius: 20px 20px 0 0; z-index: 11;
+    display: none; flex-direction: column; animation: slideUp 0.25s ease;
+  }
+  .agent-picker-panel.open { display: flex; }
+  .agent-picker-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; cursor: pointer; transition: background 0.15s;
+  }
+  .agent-picker-item:hover { background: rgba(99,102,241,0.1); }
+  .agent-picker-item.active { background: rgba(99,102,241,0.15); }
+  .agent-picker-item .check { color: #6366f1; font-size: 18px; margin-left: auto; }
+
+  /* ─── Slash Button ─── */
+  .slash-btn {
+    width: 36px; height: 36px;
+    border-radius: 8px; border: 1px solid #3f3f46;
+    background: transparent; color: #a1a1aa;
+    font-size: 16px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: all 0.15s;
+  }
+  .slash-btn:hover { border-color: #6366f1; color: #6366f1; background: rgba(99,102,241,0.08); }
+  .slash-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ─── Slash Menu Overlay ─── */
+  .slash-menu-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.3); z-index: 10;
+    display: none; animation: fadeInOverlay 0.15s ease;
+  }
+  .slash-menu-overlay.open { display: block; }
+  .slash-menu-panel {
+    position: absolute; bottom: 60px; left: 12px;
+    width: 280px; max-height: 300px;
+    background: #1e1e24; border: 1px solid #3f3f46;
+    border-radius: 12px; z-index: 11;
+    display: none; flex-direction: column; overflow: hidden;
+    animation: fadeIn 0.15s ease;
+  }
+  .slash-menu-panel.open { display: flex; }
+  .slash-menu-header {
+    padding: 8px 12px; font-size: 11px; color: #71717a;
+    border-bottom: 1px solid #2a2a2e; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .slash-menu-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; cursor: pointer; transition: background 0.12s;
+  }
+  .slash-menu-item:hover { background: rgba(99,102,241,0.1); }
+  .slash-menu-item .icon { font-size: 14px; color: #6366f1; width: 20px; text-align: center; }
+  .slash-menu-item .label { font-size: 13px; color: #e4e4e7; }
+  .slash-menu-item .desc { font-size: 11px; color: #71717a; }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<div style="max-width:900px;width:100%;">
+<detail style="color:#a1a1aa;font-size:13px;margin-bottom:12px;display:block;">
+<summary style="cursor:pointer;color:#d4d4d4;font-weight:600;">📱 场景选择 — Flutter 最终效果评估</summary>
+
+<div class="scene-tabs" style="margin-top:8px;">
+  <button class="scene-tab active" onclick="switchScene('chat')">💬 聊天场景</button>
+  <button class="scene-tab" onclick="switchScene('empty')">📭 空状态</button>
+  <button class="scene-tab" onclick="switchScene('disconnected')">🔌 断线状态</button>
+  <button class="scene-tab" onclick="switchScene('sessions')">📋 会话切换</button>
+  <button class="scene-tab" onclick="switchScene('slashagent')">⚡ Slash & Agent</button>
+</div>
+</div>
+
+<!-- ═══════════════════ SCENE: Chat ═══════════════════ -->
+<div id="scene-chat" class="scene active">
+  <div class="phone-frame">
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>📶 🔋</span>
+    </div>
+
+    <!-- AppBar -->
+    <div class="appbar">
+      <div class="appbar-title">
+        <div class="logo">✦</div>
+        <div>
+          Copilot Mirror
+          <div style="font-size:10px;color:#71717a;font-weight:400;">技术架构与WebSocket协议设计</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <!-- Agent chip -->
+        <div class="agent-chip" id="agentChipChat" onclick="showAgentPicker('chat')">
+          <span class="chip-icon">🤖</span>
+          <span id="agentLabelChat">agent</span>
+          <span class="chip-arrow">▾</span>
+        </div>
+        <button class="session-switch-btn" onclick="showSessionDrawer()" title="Switch session">⇄</button>
+        <div class="status-dot"><span class="dot"></span> Connected</div>
+      </div>
+    </div>
+
+    <!-- Connection Bar -->
+    <div class="conn-bar connected">✓ cloud_done  Connected</div>
+
+    <!-- Chat Body -->
+    <div class="chat-body" id="chatBody">
+
+      <!-- ══ System message ══ -->
+      <div class="msg-row system">
+        <div class="bubble">Connected to Copilot Mirror v1</div>
+      </div>
+
+      <!-- ══ User message ══ -->
+      <div class="msg-row user">
+        <div class="bubble">
+          <div class="block-text">帮我写一个 TypeScript 类型定义</div>
+        </div>
+      </div>
+
+      <!-- ══ Assistant message ══ -->
+      <div class="msg-row assistant">
+        <div class="bubble">
+          <div class="bubble-role"><span class="icon">🤖</span> Copilot</div>
+
+          <!-- Thinking block -->
+          <div class="block-thinking">
+            <div class="block-thinking-header">
+              <div class="spin"></div>
+              Thinking
+              <span style="margin-left:auto;color:#71717a;">▼</span>
+            </div>
+            <div class="block-thinking-body">
+              分析一下需求：用户想要 TypeScript 类型定义，要求结构清晰、包含注释。
+            </div>
+          </div>
+
+          <!-- Text block -->
+          <div class="block-text">
+            <p>好的，以下是完整的类型定义：</p>
+          </div>
+
+          <!-- Code block -->
+          <div class="block-code">
+            <div class="block-code-header">
+              <span>📘 typescript</span>
+              <div class="actions">
+                <span>📋</span>
+              </div>
+            </div>
+            <div class="block-code-body">/** User profile */
+interface User {
+  id: string;
+  name: string;
+  email?: string;
+  role: 'admin' | 'user';
+}
+
+/** API response wrapper */
+interface ApiResult&lt;T&gt; {
+  ok: boolean;
+  data?: T;
+  error?: string;
+}</div>
+          </div>
+
+          <!-- Tool call -->
+          <div class="block-tool">
+            <div class="icon">✓</div>
+            <div class="body">
+              <span class="name">readFile</span>
+              <span class="status">· succeeded</span>
+              <div class="summary">已读取 src/types.ts（143 行）</div>
+            </div>
+          </div>
+
+          <!-- Artifact -->
+          <div class="block-artifact">
+            <div class="icon">📄</div>
+            <div class="info">
+              <div class="name">types.ts</div>
+              <div class="uri">src/types.ts</div>
+            </div>
+            <button style="background:#6366f1;border:none;border-radius:8px;color:#fff;padding:4px 10px;font-size:12px;cursor:pointer;">打开</button>
+          </div>
+
+        </div><!-- /bubble -->
+      </div>
+
+      <!-- ══ Typing indicator ══ -->
+      <div class="msg-row assistant">
+        <div class="bubble" style="padding:12px 16px;">
+          <div style="display:flex;gap:4px;">
+            <span style="width:6px;height:6px;background:#a78bfa;border-radius:50%;animation:spin 1s ease infinite;"></span>
+            <span style="width:6px;height:6px;background:#a78bfa;border-radius:50%;animation:spin 1s ease infinite 0.2s;"></span>
+            <span style="width:6px;height:6px;background:#a78bfa;border-radius:50%;animation:spin 1s ease infinite 0.4s;"></span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /chat-body -->
+
+    <!-- Session switch loading -->
+    <div class="session-loading" id="sessionLoading">
+      <div class="spinner"></div>
+      <div class="text">Switching session…</div>
+    </div>
+
+    <!-- Switching toast -->
+    <div class="switching-toast" id="switchingToast">已切换到: <span id="switchedSessionName"></span></div>
+
+    <!-- Session Drawer -->
+    <div class="drawer-overlay" id="drawerOverlay" onclick="hideSessionDrawer()"></div>
+    <div class="drawer-panel" id="drawerPanel">
+      <div class="drawer-handle"></div>
+      <div class="drawer-header">
+        <h3><span class="icon">⇄</span> Switch Session</h3>
+        <button class="drawer-new-btn" onclick="newSession()">＋ New</button>
+      </div>
+      <hr class="drawer-divider">
+      <div class="drawer-list" id="sessionList"></div>
+    </div>
+
+    <!-- Agent Picker -->
+    <div class="agent-picker-overlay" id="agentPickerOverlayChat" onclick="hideAgentPicker('chat')"></div>
+    <div class="agent-picker-panel" id="agentPickerPanelChat">
+      <div class="drawer-handle"></div>
+      <div class="drawer-header">
+        <h3><span class="icon">🤖</span> Switch Agent</h3>
+      </div>
+      <hr class="drawer-divider">
+      <div class="drawer-list" id="agentListChat"></div>
+    </div>
+
+    <!-- Slash Menu -->
+    <div class="slash-menu-overlay" id="slashMenuOverlayChat" onclick="hideSlashMenu('chat')"></div>
+    <div class="slash-menu-panel" id="slashMenuPanelChat">
+      <div class="slash-menu-header">Slash Commands</div>
+      <div id="slashMenuListChat"></div>
+    </div>
+
+    <!-- FAB -->
+    <div class="fab-scroll">↓</div>
+
+    <!-- Composer -->
+    <div class="composer">
+      <button class="slash-btn" id="slashBtnChat" onclick="toggleSlashMenu('chat')" title="Slash commands">/</button>
+      <textarea class="composer-input" placeholder="Ask Copilot…" rows="1">帮我写一个 TypeScript 类型定义</textarea>
+      <button class="composer-btn">➤</button>
+    </div>
+  </div>
+  <div class="annotation">
+    <mark>主场景</mark> 完整的对话界面：消息气泡 + 5 种 Block 组件 + 输入框 + 连接指示器
+  </div>
+</div>
+
+<!-- ═══════════════════ SCENE: Empty ═══════════════════ -->
+<div id="scene-empty" class="scene">
+  <div class="phone-frame">
+    <div class="status-bar"><span>9:41</span><span>📶 🔋</span></div>
+    <div class="appbar">
+      <div class="appbar-title"><div class="logo">✦</div> Copilot Mirror</div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div class="agent-chip" onclick="showAgentPicker('chat')">
+          <span class="chip-icon">🤖</span>
+          <span>Default</span>
+          <span class="chip-arrow">▾</span>
+        </div>
+        <button class="session-switch-btn" onclick="showSessionDrawer()" title="Switch session">⇄</button>
+        <div class="status-dot"><span class="dot"></span> Connected</div>
+      </div>
+    </div>
+    <div class="conn-bar connected">✓ cloud_done  Connected</div>
+
+    <div class="chat-body">
+      <div class="empty-state">
+        <div class="icon-big">💬</div>
+        <div class="title">No messages yet</div>
+        <div class="desc">镜像连接已建立<br>在 VS Code 中开始对话后<br>消息将实时展示在这里</div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <button class="slash-btn" onclick="toggleSlashMenu('chat')" title="Slash commands">/</button>
+      <textarea class="composer-input" placeholder="Ask Copilot…" rows="1"></textarea>
+      <button class="composer-btn">➤</button>
+    </div>
+  </div>
+  <div class="annotation">
+    <mark>空状态</mark> 已连接但尚未有任何对话消息时的展示
+  </div>
+</div>
+
+<!-- ═══════════════════ SCENE: Disconnected ═══════════════════ -->
+<div id="scene-disconnected" class="scene">
+  <div class="phone-frame">
+    <div class="status-bar"><span>9:41</span><span>📶 🔋</span></div>
+    <div class="appbar">
+      <div class="appbar-title"><div class="logo">✦</div> Copilot Mirror</div>
+      <div class="status-dot" style="color:#71717a;"><span class="dot" style="background:#71717a;box-shadow:none;"></span> Offline</div>
+    </div>
+    <div class="conn-bar disconnected">⚠ cloud_off  Disconnected</div>
+
+    <div class="chat-body">
+      <div class="empty-state">
+        <div class="icon-big">☁️</div>
+        <div class="title">Not connected</div>
+        <div class="desc">启动 Node.js Bridge 后<br>点击下方按钮连接</div>
+        <button class="btn-connect">Connect</button>
+      </div>
+    </div>
+
+    <div class="composer">
+      <textarea class="composer-input" placeholder="Disconnected…" rows="1" disabled></textarea>
+      <button class="composer-btn" disabled>➤</button>
+    </div>
+  </div>
+  <div class="annotation">
+    <mark>断线状态</mark> 未连接时的界面，输入框禁用，"Connect" 按钮引导重连
+  </div>
+</div>
+
+<!-- ═══════════════════ SCENE: Sessions ═══════════════════ -->
+<div id="scene-sessions" class="scene">
+  <div class="phone-frame" style="position:relative;">
+    <div class="status-bar"><span>9:41</span><span>📶 🔋</span></div>
+    <div class="appbar">
+      <div class="appbar-title">
+        <div class="logo">✦</div>
+        <div>
+          Copilot Mirror
+          <div style="font-size:10px;color:#71717a;font-weight:400;">手机监控会话软件思路</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div class="agent-chip" onclick="showAgentPicker('chat')">
+          <span class="chip-icon">🤖</span>
+          <span>Default</span>
+          <span class="chip-arrow">▾</span>
+        </div>
+        <button class="session-switch-btn" onclick="showSessionDrawer()" title="Switch session" style="background:#27272a;border-color:#6366f1;color:#a78bfa;">⇄</button>
+        <div class="status-dot"><span class="dot"></span> Connected</div>
+      </div>
+    </div>
+    <div class="conn-bar connected">✓ cloud_done  Connected</div>
+
+    <!-- Chat body with messages dimmed behind drawer -->
+    <div class="chat-body" id="sessionsChatBody" style="opacity:0.3;">
+      <div class="empty-state">
+        <div class="icon-big">💬</div>
+        <div class="title">No messages yet</div>
+        <div class="desc">已切换到 "手机监控会话软件思路"<br>等待该会话的消息快照…</div>
+      </div>
+    </div>
+
+    <!-- Session switch loading (shown briefly) -->
+    <div class="session-loading show" id="sessionsSceneLoading">
+      <div class="spinner"></div>
+      <div class="text">Switching session…</div>
+    </div>
+
+    <!-- Switching toast -->
+    <div class="switching-toast show" id="sessionsSceneToast">已切换到: 手机监控会话软件思路</div>
+
+    <!-- Session Drawer OPEN -->
+    <div class="drawer-overlay open" onclick="hideSessionsSceneDrawer()"></div>
+    <div class="drawer-panel open" id="sessionsSceneDrawer">
+      <div class="drawer-handle"></div>
+      <div class="drawer-header">
+        <h3><span class="icon">⇄</span> Switch Session</h3>
+        <button class="drawer-new-btn" onclick="hideSessionsSceneDrawer()">＋ New</button>
+      </div>
+      <hr class="drawer-divider">
+      <div class="drawer-list">
+        <!-- Active session -->
+        <div class="drawer-item" onclick="sessionsSceneSwitch(0)">
+          <div class="drawer-item-icon inactive" style="background:rgba(99,102,241,0.2);color:#a78bfa;">💬</div>
+          <div class="drawer-item-info">
+            <div class="drawer-item-title" style="font-weight:600;">技术架构与WebSocket协议设计</div>
+            <div class="drawer-item-preview">协议版本 1，17 种事件类型…</div>
+          </div>
+          <span class="drawer-item-check">✓</span>
+        </div>
+        <!-- Current session (dimmed) -->
+        <div class="drawer-item" onclick="sessionsSceneSwitch(1)">
+          <div class="drawer-item-icon inactive" style="background:#27272a;color:#71717a;">💬</div>
+          <div class="drawer-item-info">
+            <div class="drawer-item-title" style="color:#71717a;">手机监控会话软件思路</div>
+            <div class="drawer-item-preview">Flutter 移动端设计…</div>
+          </div>
+        </div>
+        <!-- Other sessions -->
+        <div class="drawer-item" onclick="sessionsSceneSwitch(2)">
+          <div class="drawer-item-icon inactive" style="background:#27272a;color:#71717a;">💬</div>
+          <div class="drawer-item-info">
+            <div class="drawer-item-title">会话切换功能实现</div>
+            <div class="drawer-item-preview">session.list / switchSession 协议…</div>
+          </div>
+        </div>
+        <div class="drawer-item" onclick="sessionsSceneSwitch(3)">
+          <div class="drawer-item-icon inactive" style="background:#27272a;color:#71717a;">💬</div>
+          <div class="drawer-item-info">
+            <div class="drawer-item-title">CDP DOM 探测记录</div>
+            <div class="drawer-item-preview">monaco-list 结构分析…</div>
+          </div>
+        </div>
+        <div class="drawer-item" onclick="sessionsSceneSwitch(4)">
+          <div class="drawer-item-icon inactive" style="background:#27272a;color:#71717a;">💬</div>
+          <div class="drawer-item-info">
+            <div class="drawer-item-title">Flutter UI 最终设计</div>
+            <div class="drawer-item-preview">组件树 + 主题配色…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Composer -->
+    <div class="composer">
+      <textarea class="composer-input" placeholder="Message…" rows="1"></textarea>
+      <button class="composer-btn" style="opacity:0.5;">➤</button>
+    </div>
+  </div>
+  <div class="annotation">
+    <mark>会话切换</mark> 点击 AppBar 的 ⇄ 按钮打开底部抽屉，选择目标会话自动切换；<br>"New" 新建会话；切换中显示 loading + toast 提示
+  </div>
+</div>
+
+<!-- ═══════════════════ SCENE: Slash & Agent ═══════════════════ -->
+<div id="scene-slashagent" class="scene">
+  <div class="phone-frame" style="position:relative;">
+    <div class="status-bar"><span>9:41</span><span>📶 🔋</span></div>
+    <div class="appbar">
+      <div class="appbar-title">
+        <div class="logo">✦</div>
+        <div>
+          Copilot Mirror
+          <div style="font-size:10px;color:#71717a;font-weight:400;">Agent 功能演示</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div class="agent-chip" id="agentChipSlash" onclick="showAgentPicker('slash')" style="border-color:#6366f1;">
+          <span class="chip-icon">🤖</span>
+          <span id="agentLabelSlash">agent</span>
+          <span class="chip-arrow">▾</span>
+        </div>
+        <div class="status-dot"><span class="dot"></span> Connected</div>
+      </div>
+    </div>
+    <div class="conn-bar connected">✓ cloud_done  Connected</div>
+
+    <div class="chat-body" id="slashChatBody">
+      <!-- System message -->
+      <div class="msg-row system">
+        <div class="bubble">Connected to Copilot Mirror v1 · Agent: <strong>Copilot</strong></div>
+      </div>
+
+      <!-- User message -->
+      <div class="msg-row user">
+        <div class="bubble">
+          <div class="block-text">/explain 这段代码的工作原理</div>
+        </div>
+      </div>
+
+      <!-- Assistant reply -->
+      <div class="msg-row assistant">
+        <div class="bubble">
+          <div class="bubble-role"><span class="icon">🤖</span> Copilot</div>
+          <div class="block-text">
+            <p>/explain 命令触发了代码解释流程：</p>
+            <ol style="margin:4px 0 0 16px;padding:0;color:#d4d4d4;">
+              <li>Bridge 在 VS Code 中输入 "/explain" 并提交</li>
+              <li>Copilot 解析 slash 命令，提取上下文代码</li>
+              <li>生成自然语言解释后通过 <code>block.delta</code> 流式返回</li>
+            </ol>
+          </div>
+          <div class="block-tool" style="margin-top:6px;">
+            <div class="icon">✓</div>
+            <div class="body">
+              <span class="name">applySlashCommand</span>
+              <span class="status">· succeeded</span>
+              <div class="summary">Index: 0, label: /explain</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Slash menu demo -->
+      <div class="msg-row system">
+        <div class="bubble" style="background:#27272a;display:flex;align-items:center;gap:6px;">
+          <span style="color:#a78bfa;">/</span> 点击 composer 的 <strong style="color:#e4e4e7;">"/"</strong> 按钮查看可用 slash 命令
+        </div>
+      </div>
+
+      <!-- Agent switch demo -->
+      <div class="msg-row system">
+        <div class="bubble" style="background:#27272a;display:flex;align-items:center;gap:6px;">
+          <span style="color:#a78bfa;">🤖</span> 点击 AppBar 的 agent chip 切换不同 agent
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Picker -->
+    <div class="agent-picker-overlay" id="agentPickerOverlaySlash" onclick="hideAgentPicker('slash')"></div>
+    <div class="agent-picker-panel" id="agentPickerPanelSlash">
+      <div class="drawer-handle"></div>
+      <div class="drawer-header">
+        <h3><span class="icon">🤖</span> Switch Agent</h3>
+      </div>
+      <hr class="drawer-divider">
+      <div class="drawer-list" id="agentListSlash"></div>
+    </div>
+
+    <!-- Slash Menu (visible) -->
+    <div class="slash-menu-overlay open" id="slashMenuOverlaySlash"></div>
+    <div class="slash-menu-panel open" id="slashMenuPanelSlash">
+      <div class="slash-menu-header">Slash Commands · <span id="slashQueryHint">6 available</span></div>
+      <div id="slashMenuListSlash"></div>
+    </div>
+
+    <!-- Composer -->
+    <div class="composer" style="position:relative;">
+      <button class="slash-btn" id="slashBtnSlash" onclick="toggleSlashMenu('slash')" title="Slash commands" style="border-color:#6366f1;color:#6366f1;">/</button>
+      <textarea class="composer-input" placeholder="Ask Copilot…" rows="1"></textarea>
+      <button class="composer-btn">➤</button>
+    </div>
+  </div>
+  <div class="annotation">
+    <mark>Slash & Agent</mark> 输入框左侧 <strong>/</strong> 按钮打开 slash 菜单浮层；<br>AppBar 右侧 <strong>agent chip</strong> 点击打开底部 picker 切换不同 agent<br>
+    实际使用时 Bridge 通过 CDP 注入触发 VS Code 原生的 suggest widget / quick-input
+  </div>
+</div>
+
+</div>
+
+<script>
+function switchScene(id) {
+  document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.scene-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('scene-' + id).classList.add('active');
+  const labelMap = {chat:'💬',empty:'📭',disconnected:'🔌',sessions:'📋',slashagent:'⚡'};
+  for (const t of document.querySelectorAll('.scene-tab')) {
+    if (t.textContent.includes(labelMap[id]) || t.getAttribute('onclick')?.includes(id)) {
+      t.classList.add('active');
+    }
+  }
+  // Close overlays when switching away
+  if (id !== 'sessions') hideSessionDrawer();
+  hideAgentPicker('chat');
+  hideAgentPicker('slash');
+  hideSlashMenu('chat');
+  hideSlashMenu('slash');
+}
+
+// ── Agent data ──
+
+const AGENT_DATA = [
+  { id: 'agent', name: 'agent', description: 'Default Copilot agent', active: true },
+  { id: 'plan', name: 'plan', description: 'Planning and task breakdown', active: false },
+  { id: 'windows_developer', name: 'Agent Windows Developer', description: 'Windows app development specialist', active: false },
+  { id: 'data', name: 'Data', description: 'Data analysis and queries', active: false },
+  { id: 'demonstrate', name: 'DemonStrate', description: 'Demonstration agent', active: false },
+];
+
+let currentAgentScene = 'chat';
+
+function renderAgentList(scene) {
+  const list = document.getElementById('agentList' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  list.innerHTML = AGENT_DATA.map(a => `
+    <div class="agent-picker-item${a.active ? ' active' : ''}" onclick="selectAgent('${scene}','${a.id}','${a.name}')">
+      <span style="font-size:20px;">🤖</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;color:#e4e4e7;font-weight:${a.active?'600':'400'};">${a.name}</div>
+        <div style="font-size:12px;color:#71717a;">${a.description}</div>
+      </div>
+      ${a.active ? '<span class="check">✓</span>' : ''}
+    </div>
+  `).join('');
+}
+
+function showAgentPicker(scene) {
+  currentAgentScene = scene;
+  renderAgentList(scene);
+  document.getElementById('agentPickerOverlay' + (scene === 'chat' ? 'Chat' : 'Slash')).classList.add('open');
+  document.getElementById('agentPickerPanel' + (scene === 'chat' ? 'Chat' : 'Slash')).classList.add('open');
+}
+
+function hideAgentPicker(scene) {
+  const overlay = document.getElementById('agentPickerOverlay' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  const panel = document.getElementById('agentPickerPanel' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  if (overlay) overlay.classList.remove('open');
+  if (panel) panel.classList.remove('open');
+}
+
+function selectAgent(scene, id, name) {
+  // Update active state
+  AGENT_DATA.forEach(a => a.active = a.id === id);
+  hideAgentPicker(scene);
+
+  // Update label
+  const label = document.getElementById('agentLabel' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  if (label) label.textContent = name;
+
+  // Update AppBar subtitle
+  const sceneEl = document.getElementById('scene-' + scene);
+  const subtitle = sceneEl ? sceneEl.querySelector('.appbar-title div div:last-child') : null;
+  if (subtitle) subtitle.textContent = 'Agent: ' + name;
+
+  // Add system message in slashagent scene
+  if (scene === 'slash') {
+    const body = document.getElementById('slashChatBody');
+    const msg = document.createElement('div');
+    msg.className = 'msg-row system';
+    msg.innerHTML = '<div class="bubble">已切换到 Agent: <strong>' + name + '</strong></div>';
+    body.appendChild(msg);
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+// ── Slash command data ──
+
+const SLASH_DATA = [
+  { label: '/explain', desc: 'Explain the selected code' },
+  { label: '/fix', desc: 'Propose a fix for problems' },
+  { label: '/tests', desc: 'Generate unit tests' },
+  { label: '/doc', desc: 'Add documentation' },
+  { label: '/optimize', desc: 'Suggest performance improvements' },
+  { label: '/help', desc: 'Show available commands' },
+];
+
+function renderSlashMenu(scene) {
+  const list = document.getElementById('slashMenuList' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  if (!list) return;
+  list.innerHTML = SLASH_DATA.map((s, i) => `
+    <div class="slash-menu-item" onclick="selectSlashCommand('${scene}',${i},'${s.label}')">
+      <span class="icon">&gt;_</span>
+      <div>
+        <div class="label">${s.label}</div>
+        <div class="desc">${s.desc}</div>
+      </div>
+    </div>
+  `).join('');
+  document.getElementById('slashQueryHint') && (document.getElementById('slashQueryHint').textContent = SLASH_DATA.length + ' available');
+}
+
+function toggleSlashMenu(scene) {
+  const overlay = document.getElementById('slashMenuOverlay' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  const panel = document.getElementById('slashMenuPanel' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  if (!overlay || !panel) return;
+  const isOpen = overlay.classList.contains('open');
+  if (isOpen) {
+    hideSlashMenu(scene);
+  } else {
+    renderSlashMenu(scene);
+    overlay.classList.add('open');
+    panel.classList.add('open');
+  }
+}
+
+function hideSlashMenu(scene) {
+  const overlay = document.getElementById('slashMenuOverlay' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  const panel = document.getElementById('slashMenuPanel' + (scene === 'chat' ? 'Chat' : 'Slash'));
+  if (overlay) overlay.classList.remove('open');
+  if (panel) panel.classList.remove('open');
+}
+
+function selectSlashCommand(scene, index, label) {
+  hideSlashMenu(scene);
+
+  if (scene === 'slash') {
+    const body = document.getElementById('slashChatBody');
+    const msg = document.createElement('div');
+    msg.className = 'msg-row system';
+    msg.innerHTML = '<div class="bubble">已应用 slash 命令: <strong>' + label + '</strong>（通过 suggest widget 模拟选择）</div>';
+    body.appendChild(msg);
+    body.scrollTop = body.scrollHeight;
+  }
+}
+
+// ── Session drawer (chat scene) ──
+
+const SESSION_DATA = [
+  { title: '技术架构与WebSocket协议设计', preview: '协议版本 1，17 种事件类型…', active: true },
+  { title: '手机监控会话软件思路', preview: 'Flutter 移动端设计…', active: false },
+  { title: '会话切换功能实现', preview: 'session.list / switchSession 协议…', active: false },
+  { title: 'CDP DOM 探测记录', preview: 'monaco-list 结构分析…', active: false },
+  { title: 'Flutter UI 最终设计', preview: '组件树 + 主题配色…', active: false },
+];
+
+let currentSessionIndex = 0;
+
+function renderSessionList() {
+  const list = document.getElementById('sessionList');
+  list.innerHTML = SESSION_DATA.map((s, i) => `
+    <div class="drawer-item${s.active ? ' active' : ''}" onclick="selectSession(${i})">
+      <div class="drawer-item-icon ${s.active ? 'active' : 'inactive'}">💬</div>
+      <div class="drawer-item-info">
+        <div class="drawer-item-title${s.active ? ' active' : ''}">${s.title}</div>
+        <div class="drawer-item-preview">${s.preview}</div>
+      </div>
+      ${s.active ? '<span class="drawer-item-check">✓</span>' : ''}
+    </div>
+  `).join('');
+}
+
+function showSessionDrawer() {
+  renderSessionList();
+  document.getElementById('drawerOverlay').classList.add('open');
+  document.getElementById('drawerPanel').classList.add('open');
+}
+
+function hideSessionDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('drawerPanel').classList.remove('open');
+}
+
+function selectSession(index) {
+  if (index === currentSessionIndex) { hideSessionDrawer(); return; }
+
+  // Show loading + switching toast
+  document.getElementById('sessionLoading').classList.add('show');
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('drawerPanel').classList.remove('open');
+
+  const targetTitle = SESSION_DATA[index].title;
+  document.getElementById('switchedSessionName').textContent = targetTitle;
+  document.getElementById('switchingToast').classList.add('show');
+
+  // Simulate switch delay
+  setTimeout(() => {
+    // Update active state
+    SESSION_DATA[currentSessionIndex].active = false;
+    SESSION_DATA[index].active = true;
+    currentSessionIndex = index;
+
+    // Update AppBar subtitle
+    const subtitle = document.querySelector('.appbar-title div div');
+    if (subtitle) subtitle.textContent = targetTitle;
+
+    // Hide loading + toast
+    document.getElementById('sessionLoading').classList.remove('show');
+    document.getElementById('switchingToast').classList.remove('show');
+
+    // Clear and reload chat body (simulate fresh snapshot)
+    const chatBody = document.getElementById('chatBody');
+    chatBody.innerHTML = `
+      <div class="msg-row system">
+        <div class="bubble">已切换到会话: ${targetTitle}</div>
+      </div>
+      <div class="empty-state" style="flex:1;">
+        <div class="icon-big">💬</div>
+        <div class="title">等待消息快照…</div>
+        <div class="desc">Bridge 正在同步该会话的历史消息</div>
+      </div>
+    `;
+  }, 1200);
+}
+
+function newSession() {
+  hideSessionDrawer();
+  document.getElementById('sessionLoading').classList.add('show');
+
+  setTimeout(() => {
+    // Add new session to data
+    const newIdx = SESSION_DATA.length;
+    SESSION_DATA.push({ title: '新建会话', preview: '开始新的对话…', active: true });
+    SESSION_DATA[currentSessionIndex].active = false;
+    currentSessionIndex = newIdx;
+
+    const subtitle = document.querySelector('.appbar-title div div');
+    if (subtitle) subtitle.textContent = '新建会话';
+
+    document.getElementById('sessionLoading').classList.remove('show');
+
+    const chatBody = document.getElementById('chatBody');
+    chatBody.innerHTML = `
+      <div class="msg-row system">
+        <div class="bubble">已创建新会话</div>
+      </div>
+    `;
+  }, 800);
+}
+
+// ── Sessions scene drawer ──
+
+function hideSessionsSceneDrawer() {
+  // Simulate "New session" in sessions scene
+  document.getElementById('sessionsSceneDrawer').classList.remove('open');
+  document.querySelector('#sessionsSceneDrawer .drawer-overlay')?.classList.remove('open');
+  document.getElementById('sessionsSceneLoading').classList.remove('show');
+  document.getElementById('sessionsSceneToast').classList.remove('show');
+
+  const body = document.getElementById('sessionsChatBody');
+  body.innerHTML = `
+    <div class="msg-row system">
+      <div class="bubble">已创建新会话</div>
+    </div>
+  `;
+  body.style.opacity = '1';
+}
+
+function sessionsSceneSwitch(index) {
+  const titles = ['技术架构与WebSocket协议设计', '手机监控会话软件思路', '会话切换功能实现', 'CDP DOM 探测记录', 'Flutter UI 最终设计'];
+  const name = titles[index] || '未知会话';
+
+  // Show loading
+  document.getElementById('sessionsSceneLoading').classList.add('show');
+  document.getElementById('sessionsSceneToast').querySelector('span').textContent = name;
+  document.getElementById('sessionsSceneToast').classList.add('show');
+
+  // Close drawer
+  document.getElementById('sessionsSceneDrawer').classList.remove('open');
+  document.querySelector('#sessionsSceneDrawer .drawer-overlay')?.classList.remove('open');
+
+  setTimeout(() => {
+    document.getElementById('sessionsSceneLoading').classList.remove('show');
+    document.getElementById('sessionsSceneToast').classList.remove('show');
+
+    // Update AppBar subtitle
+    const sub = document.querySelector('#scene-sessions .appbar-title div div');
+    if (sub) sub.textContent = name;
+
+    const body = document.getElementById('sessionsChatBody');
+    body.innerHTML = `
+      <div class="msg-row system">
+        <div class="bubble">已切换到会话: ${name}</div>
+      </div>
+      <div class="empty-state" style="flex:1;">
+        <div class="icon-big">💬</div>
+        <div class="title">等待消息快照…</div>
+        <div class="desc">Bridge 正在同步该会话的历史消息</div>
+      </div>
+    `;
+    body.style.opacity = '1';
+  }, 1000);
+}
+
+// ── Keyboard shortcut: Escape closes drawer ──
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    hideSessionDrawer();
+    hideAgentPicker('chat');
+    hideAgentPicker('slash');
+    hideSlashMenu('chat');
+    hideSlashMenu('slash');
+  }
+});
+
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+  renderSlashMenu('slash');
+});
+</script>
+
+</body>
+</html>
