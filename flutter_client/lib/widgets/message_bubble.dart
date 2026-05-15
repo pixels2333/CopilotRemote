@@ -35,10 +35,10 @@ class MessageBubble extends StatelessWidget {
                 children: [
                   const Text('🤖', style: TextStyle(fontSize: 12)),
                   const SizedBox(width: 4),
-                  Text('Copilot',
+                  const Text('Copilot',
                       style: TextStyle(
                           fontSize: 11,
-                          color: colorScheme.primary.withOpacity(0.7))),
+                          color: Color(0xFFA78BFA))),
                 ],
               ),
             ),
@@ -48,13 +48,14 @@ class MessageBubble extends StatelessWidget {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.of(context).size.width * 0.82,
             ),
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: isUser
-                  ? colorScheme.primaryContainer
+                  ? const Color(0xFF6366F1)
                   : (isSystem
-                      ? colorScheme.surfaceContainerHighest
-                      : colorScheme.surfaceContainerHigh),
+                      ? const Color(0xFF27272A)
+                      : const Color(0xFF1E1E24)),
+              border: isAssistant ? Border.all(color: const Color(0xFF2A2A2E)) : null,
               borderRadius: BorderRadius.only(
                 topLeft: const Radius.circular(16),
                 topRight: const Radius.circular(16),

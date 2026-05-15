@@ -1,22 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:uuid/uuid.dart';
-import '../models/envelope.dart';
 import '../models/session.dart';
 import '../models/message.dart';
 import '../models/types.dart';
 import '../models/slash_command.dart';
 import '../models/agent.dart';
-import '../services/websocket_service.dart';
-import '../services/protocol_decoder.dart';
+import '../services/cdp_service.dart';
+import '../services/bridge_client.dart';
+import '../services/dom_observer.dart';
 
-/// Immutable chat state
 class ChatState {
   final List<MirrorMessage> messages;
   final ConnectionStatus connectionStatus;
   final String? sessionId;
-  final int lastSeq;
   final bool isSending;
+  final bool isLoadingSessions;
   final String? errorMessage;
   final List<MirrorChatSession> sessions;
   final String? activeSessionId;
@@ -29,8 +28,8 @@ class ChatState {
     this.messages = const [],
     this.connectionStatus = ConnectionStatus.disconnected,
     this.sessionId,
-    this.lastSeq = 0,
     this.isSending = false,
+    this.isLoadingSessions = false,
     this.errorMessage,
     this.sessions = const [],
     this.activeSessionId,
@@ -44,8 +43,8 @@ class ChatState {
     List<MirrorMessage>? messages,
     ConnectionStatus? connectionStatus,
     String? sessionId,
-    int? lastSeq,
     bool? isSending,
+    bool? isLoadingSessions,
     String? errorMessage,
     List<MirrorChatSession>? sessions,
     String? activeSessionId,
@@ -59,8 +58,8 @@ class ChatState {
       messages: messages ?? this.messages,
       connectionStatus: connectionStatus ?? this.connectionStatus,
       sessionId: sessionId ?? this.sessionId,
-      lastSeq: lastSeq ?? this.lastSeq,
       isSending: isSending ?? this.isSending,
+      isLoadingSessions: isLoadingSessions ?? this.isLoadingSessions,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       sessions: sessions ?? this.sessions,
       activeSessionId: activeSessionId ?? this.activeSessionId,
@@ -72,439 +71,547 @@ class ChatState {
   }
 }
 
-/// Riverpod provider for the WebSocket service
-final websocketServiceProvider = Provider<WebSocketService?>((ref) => null);
-
-/// The core chat state notifier
 class ChatNotifier extends StateNotifier<ChatState> {
-  final Uuid _uuid = const Uuid();
-  WebSocketService? _wsService;
-  StreamSubscription? _messageSub;
-  StreamSubscription? _statusSub;
-  Timer? _typewriterTimer;
-  int _seq = 0;
+  CdpClient? _cdpClient;
+  StreamSubscription? _cdpSub;
+  BridgeClient? _bridgeClient;
+  StreamSubscription? _bridgeSub;
+  Timer? _listSessionsTimeoutTimer;
+  Completer<void>? _listSessionsCompleter;
 
   ChatNotifier() : super(const ChatState());
 
-  /// Connect to the bridge at [url] with optional [authToken]
-  Future<void> connect(String url, {String? authToken}) async {
-    state = state.copyWith(connectionStatus: ConnectionStatus.connecting);
+  /// Connect to bridge (ws://) or discover Copilot via CDP (host:port)
+  Future<void> connect(String input) async {
+    state = state.copyWith(
+      connectionStatus: ConnectionStatus.connecting,
+      isLoadingSessions: false,
+      isSwitchingSession: false,
+      clearError: true,
+    );
 
-    _wsService?.dispose();
-    _wsService = WebSocketService(url: url, authToken: authToken);
+    // Clean up previous connections
+    _bridgeClient?.dispose();
+    _bridgeClient = null;
+    _bridgeSub?.cancel();
+    _bridgeSub = null;
+    _cdpClient?.dispose();
+    _cdpClient = null;
+    _cdpSub?.cancel();
+    _cdpSub = null;
 
-    _messageSub = _wsService!.messages.listen(_onRawMessage);
-    _statusSub = _wsService!.onStatusChange.listen((connected) {
-      state = state.copyWith(
-        connectionStatus:
-            connected ? ConnectionStatus.connected : ConnectionStatus.reconnecting,
-      );
-    });
+    try {
+      if (input.startsWith('ws://') || input.startsWith('wss://')) {
+        // ── Bridge Protocol (MirrorEnvelope) ──
+        _bridgeClient = BridgeClient(url: input);
+        _bridgeSub = _bridgeClient!.events.listen(_onBridgeEvent);
+        await _bridgeClient!.connect();
 
-    await _wsService!.connect();
-  }
+        // Wait briefly for server.hello / session.snapshot
+        await Future.delayed(const Duration(milliseconds: 500));
 
-  /// Send a user message
-  void sendMessage(String text) {
-    if (text.trim().isEmpty || state.isSending) return;
+        if (_bridgeClient?.isConnected != true) {
+          state = state.copyWith(
+            connectionStatus: ConnectionStatus.failed,
+            errorMessage: 'Bridge 连接失败，请确认 Node.js Bridge (端口 17321) 是否在运行。',
+          );
+          return;
+        }
 
-    final requestId = _uuid.v4();
-    state = state.copyWith(isSending: true, clearError: true);
-
-    _send('client.command.sendMessage', {
-      'text': text,
-      'submit': true,
-      'focus': true,
-    }, requestId: requestId);
-  }
-
-  /// Request stop generation
-  void stopGeneration() {
-    _send('client.command.stopGeneration', {});
-  }
-
-  /// Focus the input on desktop
-  void focusInput() {
-    _send('client.command.focusInput', {});
-  }
-
-  /// Disconnect from the bridge
-  void disconnect() {
-    _typewriterTimer?.cancel();
-    _messageSub?.cancel();
-    _statusSub?.cancel();
-    _wsService?.disconnect();
-    _wsService?.dispose();
-    _wsService = null;
-    state = state.copyWith(connectionStatus: ConnectionStatus.disconnected);
-  }
-
-  // ── Session management ──
-
-  /// Request session list
-  void listSessions() {
-    _send('client.command.listSessions', {});
-  }
-
-  /// Switch to another session
-  void switchSession(String sessionId, {int? index, String? title}) {
-    _send('client.command.switchSession', {
-      if (sessionId.isNotEmpty) 'sessionId': sessionId,
-      if (index != null) 'index': index,
-      if (title != null) 'title': title,
-    });
-    state = state.copyWith(isSwitchingSession: true);
-  }
-
-  /// Create a new session
-  void newSession() {
-    _send('client.command.newSession', {});
-  }
-
-  // ── Slash command management ──
-
-  /// Request slash command list
-  void listSlashCommands({String? query}) {
-    _send('client.command.listSlashCommands', {
-      if (query != null) 'query': query,
-    });
-  }
-
-  /// Apply a slash command by index
-  void applySlashCommand(int index, {bool insertOnly = false}) {
-    _send('client.command.applySlashCommand', {
-      'index': index,
-      'insertOnly': insertOnly,
-    });
-  }
-
-  // ── Agent management ──
-
-  /// Request agent list
-  void listAgents() {
-    _send('client.command.listAgents', {});
-  }
-
-  /// Switch to another agent
-  void switchAgent(String? agentId, {int? index, String? name}) {
-    _send('client.command.switchAgent', {
-      if (agentId != null) 'agentId': agentId,
-      if (index != null) 'index': index,
-      if (name != null) 'name': name,
-    });
-  }
-
-  void _send(String type, Map<String, dynamic> payload, {String? requestId}) {
-    _wsService?.send({
-      'v': 1,
-      'seq': ++_seq,
-      'type': type,
-      'sessionId': state.sessionId,
-      if (requestId != null) 'requestId': requestId,
-      'payload': payload,
-    });
-  }
-
-  void _onRawMessage(Map<String, dynamic> raw) {
-    final event = decodeProtocolEvent(raw);
-    final seq = event.envelope.seq;
-
-    // Deduplicate
-    if (seq > 0 && seq <= state.lastSeq) return;
-
-    switch (event) {
-      case ServerHello e:
-        _onServerHello(e);
-      case SessionSnapshot e:
-        _onSessionSnapshot(e);
-      case MessageStart e:
-        _onMessageStart(e);
-      case BlockStart e:
-        _onBlockStart(e);
-      case BlockDelta e:
-        _onBlockDelta(e);
-      case BlockUpdate e:
-        _onBlockUpdate(e);
-      case BlockEnd e:
-        _onBlockEnd(e);
-      case MessageEnd e:
-        _onMessageEnd(e);
-      case ServerAck e:
-        _onServerAck(e);
-      case ServerError e:
-        _onServerError(e);
-      case ServerStatus e:
         state = state.copyWith(
-          lastSeq: seq > 0 ? seq : state.lastSeq,
+          connectionStatus: ConnectionStatus.connected,
+          sessionId: 'bridge',
         );
-      case SessionList e:
-        _onSessionList(e);
-      case SessionSwitched e:
-        _onSessionSwitched(e);
-      case SlashList e:
-        _onSlashList(e);
-      case AgentList e:
-        _onAgentList(e);
-      case AgentSwitched e:
-        _onAgentSwitched(e);
-      case UnknownEvent _:
+      } else {
+        // ── Direct CDP (auto-discovery) ──
+        final parts = input.split(':');
+        final host = parts.isNotEmpty ? parts[0] : '127.0.0.1';
+        final port = parts.length > 1 ? int.tryParse(parts[1]) ?? 9229 : 9229;
+
+        _cdpClient = CdpClient(host: host, port: port);
+        _cdpSub = _cdpClient!.events.listen(_onCdpEvent);
+
+        final wsUrl = await _cdpClient!.connectToCopilot();
+        if (wsUrl == null) {
+          state = state.copyWith(
+            connectionStatus: ConnectionStatus.failed,
+            errorMessage: '自动发现 Copilot 目标失败。请尝试在设置中手动粘贴 WebSocket URL，或检查 VS Code 是否已开启远程调试(--remote-debugging-port=$port)。',
+          );
+          return;
+        }
+
+        await _cdpClient!.enableRuntimeAndBinding();
+        await _cdpClient!.injectObserver(DomObserver.buildObserverScript());
+
+        state = state.copyWith(
+          connectionStatus: ConnectionStatus.connected,
+          sessionId: 'cdp_direct',
+        );
+      }
+    } catch (e) {
+      state = state.copyWith(
+        connectionStatus: ConnectionStatus.failed,
+        errorMessage: '连接失败: $e',
+      );
+    }
+  }
+  /// Send a user message
+  
+  void disconnect() {
+    _listSessionsTimeoutTimer?.cancel();
+    _cdpSub?.cancel();
+    _cdpClient?.dispose();
+    _cdpClient = null;
+    _bridgeSub?.cancel();
+    _bridgeClient?.dispose();
+    _bridgeClient = null;
+    _completeListSessionsRequest();
+    state = state.copyWith(connectionStatus: ConnectionStatus.disconnected, isLoadingSessions: false);
+  }
+
+  void _onCdpEvent(Map<String, dynamic> msg) {
+    if (msg['method'] == 'Runtime.bindingCalled') {
+      final params = msg['params'] as Map<String, dynamic>?;
+      if (params == null) return;
+      if (params['name'] != '__copilotMirrorEmit') return;
+      final payload = params['payload'] as String?;
+      if (payload == null) return;
+      try {
+        _onDomEvent(jsonDecode(payload) as Map<String, dynamic>);
+      } catch (_) {}
+    }
+  }
+
+  void _onBridgeEvent(BridgeEvent evt) {
+    switch (evt.type) {
+      case BridgeEventType.hello:
+        final cdp = evt.payload['cdp'] as Map<String, dynamic>?;
+        if (cdp != null && cdp['connected'] != true) {
+          // Bridge 已连接但 CDP 未就绪 — Bridge 会自动重试，无需干扰用户
+        }
+        break;
+
+      case BridgeEventType.snapshot:
+        _onDomSnapshot(evt.payload);
+        break;
+
+      case BridgeEventType.message:
+        _onDomMessage(evt.payload);
+        break;
+
+      case BridgeEventType.delta:
+        _onDomDelta(evt.payload);
+        break;
+
+      case BridgeEventType.block:
+        _onDomBlock(evt.payload);
+        break;
+
+      case BridgeEventType.blockUpdate:
+        _onDomBlockUpdate(evt.payload);
+        break;
+
+      case BridgeEventType.messageEnd:
+        _onDomMessageEnd(evt.payload);
+        break;
+
+      case BridgeEventType.sessionList:
+        _onSessionListData(evt.payload);
+        break;
+
+      case BridgeEventType.sessionSwitched:
+        final toId = evt.payload['toSessionId'] as String?;
+        final fromId = evt.payload['fromSessionId'] as String?;
+        if (toId != null && toId != state.activeSessionId) {
+          state = state.copyWith(
+            messages: const [],
+            activeSessionId: toId,
+            isSwitchingSession: false,
+          );
+        }
+        break;
+
+      case BridgeEventType.slashList:
+        final rawItems = evt.payload['items'] as List<dynamic>? ?? [];
+        final commands = rawItems.map((i) {
+          final map = i as Map<String, dynamic>;
+          return MirrorSlashCommandItem(
+            id: map['id'] as String? ?? '',
+            label: map['label'] as String? ?? '',
+            title: map['title'] as String?,
+            description: map['description'] as String?,
+            detail: map['detail'] as String?,
+            index: map['index'] as int? ?? 0,
+            source: map['source'] as String? ?? 'dom',
+          );
+        }).toList();
+        state = state.copyWith(slashCommands: commands);
+        break;
+
+      case BridgeEventType.agentList:
+        final rawAgents = evt.payload['agents'] as List<dynamic>? ?? [];
+        final activeId = evt.payload['activeAgentId'] as String?;
+        final agents = rawAgents.map((a) {
+          final map = a as Map<String, dynamic>;
+          return MirrorAgentItem(
+            id: map['id'] as String? ?? '',
+            name: map['name'] as String? ?? '',
+            description: map['description'] as String?,
+            index: map['index'] as int? ?? 0,
+            active: map['active'] as bool? ?? false,
+            source: map['source'] as String? ?? 'dom',
+          );
+        }).toList();
+        state = state.copyWith(agents: agents, activeAgentId: activeId);
+        break;
+
+      case BridgeEventType.agentSwitched:
+        final toId = evt.payload['toAgentId'] as String?;
+        if (toId != null) {
+          state = state.copyWith(activeAgentId: toId);
+        }
+        break;
+
+      case BridgeEventType.error:
+        state = state.copyWith(
+          connectionStatus: ConnectionStatus.failed,
+          errorMessage: evt.payload['message'] as String? ?? 'Bridge 返回了错误',
+        );
         break;
     }
   }
 
-  void _onServerHello(ServerHello e) {
-    final session = e.hello.session;
+  void _onDomEvent(Map<String, dynamic> event) {
+    switch (event['kind'] as String?) {
+      case 'snapshot': _onDomSnapshot(event); break;
+      case 'message': _onDomMessage(event); break;
+      case 'delta': _onDomDelta(event); break;
+      case 'block': _onDomBlock(event); break;
+      case 'blockUpdate': _onDomBlockUpdate(event); break;
+      case 'messageEnd': _onDomMessageEnd(event); break;
+    }
+  }
+
+  void _onDomSnapshot(Map<String, dynamic> event) {
+    final raw = event['messages'] as List<dynamic>?;
+    if (raw == null) return;
     state = state.copyWith(
-      connectionStatus: ConnectionStatus.connected,
-      sessionId: session['sessionId'] as String?,
-      lastSeq: e.envelope.seq,
-    );
-  }
-
-  void _onSessionSnapshot(SessionSnapshot e) {
-    final messages = e.snapshot.messages
-        .map((m) => MirrorMessage.fromJson(m))
-        .toList();
-    state = state.copyWith(
-      messages: messages,
-      lastSeq: e.envelope.seq,
-    );
-    _startTypewriter();
-  }
-
-  void _onMessageStart(MessageStart e) {
-    final msg = MirrorMessage.fromJson(e.message);
-    state = state.copyWith(
-      messages: [...state.messages, msg],
-      lastSeq: e.envelope.seq,
-    );
-  }
-
-  void _onBlockStart(BlockStart e) {
-    final msgs = List<MirrorMessage>.from(state.messages);
-    final idx = msgs.indexWhere((m) => m.id == e.messageId);
-    if (idx < 0) return;
-
-    final block = MirrorBlock.fromJson(e.block);
-    msgs[idx] = msgs[idx].copyWith(
-      blocks: () => [...msgs[idx].blocks, block],
-      status: () => MirrorStatus.streaming,
-    );
-    state = state.copyWith(messages: msgs, lastSeq: e.envelope.seq);
-  }
-
-  void _onBlockDelta(BlockDelta e) {
-    final d = e.delta;
-    final msgs = List<MirrorMessage>.from(state.messages);
-    final msgIdx = msgs.indexWhere((m) => m.id == d.messageId);
-    if (msgIdx < 0) return;
-
-    final blockIdx = msgs[msgIdx].blocks.indexWhere((b) => b.id == d.blockId);
-    if (blockIdx < 0) return;
-
-    final block = msgs[msgIdx].blocks[blockIdx];
-    final newContent = d.op == DeltaOp.append && d.offset == block.content.length
-        ? block.content + d.chunk
-        : (d.op == DeltaOp.replace ? d.chunk : block.content + d.chunk);
-
-    msgs[msgIdx] = msgs[msgIdx].copyWith(
-      blocks: () {
-        final updated = List<MirrorBlock>.from(msgs[msgIdx].blocks);
-        updated[blockIdx] = block.copyWith(
-          content: newContent,
-          status: MirrorStatus.streaming,
-        );
-        return updated;
-      },
-    );
-    state = state.copyWith(messages: msgs, lastSeq: e.envelope.seq);
-  }
-
-  void _onBlockUpdate(BlockUpdate e) {
-    final msgs = List<MirrorMessage>.from(state.messages);
-    final msgIdx = msgs.indexWhere((m) => m.id == e.messageId);
-    if (msgIdx < 0) return;
-
-    final blockIdx =
-        msgs[msgIdx].blocks.indexWhere((b) => b.id == e.blockId);
-    if (blockIdx < 0) return;
-
-    final current = msgs[msgIdx].blocks[blockIdx];
-    msgs[msgIdx] = msgs[msgIdx].copyWith(
-      blocks: () {
-        final updated = List<MirrorBlock>.from(msgs[msgIdx].blocks);
-        updated[blockIdx] = current.copyWith(
-          metadata: e.patch,
-          toolState: e.patch['toolState'] != null
-              ? ToolState.fromJson(e.patch['toolState'] as String)
-              : current.toolState,
-        );
-        return updated;
-      },
-    );
-    state = state.copyWith(messages: msgs, lastSeq: e.envelope.seq);
-  }
-
-  void _onBlockEnd(BlockEnd e) {
-    final msgs = List<MirrorMessage>.from(state.messages);
-    final msgIdx = msgs.indexWhere((m) => m.id == e.messageId);
-    if (msgIdx < 0) return;
-
-    final blockIdx =
-        msgs[msgIdx].blocks.indexWhere((b) => b.id == e.blockId);
-    if (blockIdx < 0) return;
-
-    msgs[msgIdx] = msgs[msgIdx].copyWith(
-      blocks: () {
-        final updated = List<MirrorBlock>.from(msgs[msgIdx].blocks);
-        updated[blockIdx] = updated[blockIdx].copyWith(
-          status: e.status,
-          visibleContent: updated[blockIdx].content,
-        );
-        return updated;
-      },
-    );
-    state = state.copyWith(messages: msgs, lastSeq: e.envelope.seq);
-  }
-
-  void _onMessageEnd(MessageEnd e) {
-    final msgs = List<MirrorMessage>.from(state.messages);
-    final idx = msgs.indexWhere((m) => m.id == e.messageId);
-    if (idx < 0) return;
-
-    msgs[idx] = msgs[idx].copyWith(
-      status: e.status,
-      blocks: () => msgs[idx].blocks.map((b) {
-        if (b.status == MirrorStatus.streaming) {
-          return b.copyWith(
-            status: e.status,
-            visibleContent: b.content,
-          );
-        }
-        b.visibleContent = b.content;
-        return b;
-      }).toList(),
-    );
-    state = state.copyWith(messages: msgs, lastSeq: e.envelope.seq);
-  }
-
-  void _onServerAck(ServerAck e) {
-    state = state.copyWith(isSending: false, lastSeq: e.envelope.seq);
-  }
-
-  void _onServerError(ServerError e) {
-    state = state.copyWith(
+      messages: raw.map((m) => MirrorMessage.fromJson(m as Map<String, dynamic>)).toList(),
       isSending: false,
-      errorMessage: '${e.error.code}: ${e.error.message}',
-      lastSeq: e.envelope.seq,
     );
   }
 
-  void _onSessionList(SessionList e) {
-    final activeId = e.list.activeSessionId;
-    final sessions = e.list.sessions;
-
-    // Mark active session in the list
-    final updated = sessions.map((s) {
-      return s.copyWith(active: s.sessionId == activeId);
-    }).toList();
-
+  void _onDomMessage(Map<String, dynamic> event) {
+    final raw = event['message'] as Map<String, dynamic>?;
+    if (raw == null) return;
     state = state.copyWith(
-      sessions: updated,
-      activeSessionId: activeId,
-      lastSeq: e.envelope.seq,
+      messages: [...state.messages, MirrorMessage.fromJson(raw)],
+      isSending: false,
     );
   }
 
-  void _onSessionSwitched(SessionSwitched e) {
-    state = state.copyWith(
-      messages: const [], // clear messages on session switch
-      activeSessionId: e.switched.toSessionId,
-      isSwitchingSession: false,
-      lastSeq: e.envelope.seq,
-    );
-    _typewriterTimer?.cancel();
+  void _onDomDelta(Map<String, dynamic> event) {
+    final messageId = event['messageId'] as String?;
+    final blockId = event['blockId'] as String?;
+    final chunk = event['chunk'] as String?;
+    final offset = event['offset'] as int? ?? 0;
+    if (messageId == null || blockId == null || chunk == null) return;
+    final msgs = List<MirrorMessage>.from(state.messages);
+    final mi = msgs.indexWhere((m) => m.id == messageId);
+    if (mi < 0) return;
+    final bi = msgs[mi].blocks.indexWhere((b) => b.id == blockId);
+    if (bi >= 0) {
+      final b = msgs[mi].blocks[bi];
+      if (offset <= b.content.length) {
+        b.content = b.content.substring(0, offset) + chunk;
+        b.visibleContent = b.content;
+        b.status = MirrorStatus.streaming;
+      }
+    } else {
+      msgs[mi].blocks.add(MirrorBlock(
+        id: blockId, type: _parseBlockType(event['blockType'] as String?),
+        status: MirrorStatus.streaming, content: chunk, visibleContent: chunk,
+      ));
+    }
+    state = state.copyWith(messages: msgs);
   }
 
-  void _onSlashList(SlashList e) {
-    state = state.copyWith(
-      slashCommands: e.list.items,
-      lastSeq: e.envelope.seq,
-    );
+  void _onDomBlock(Map<String, dynamic> event) {
+    final messageId = event['messageId'] as String?;
+    final rawBlock = event['block'] as Map<String, dynamic>?;
+    if (messageId == null || rawBlock == null) return;
+    final msgs = List<MirrorMessage>.from(state.messages);
+    final mi = msgs.indexWhere((m) => m.id == messageId);
+    if (mi < 0) return;
+    final blocks = List<MirrorBlock>.from(msgs[mi].blocks)..add(MirrorBlock.fromJson(rawBlock));
+    msgs[mi] = msgs[mi].copyWith(blocks: () => blocks);
+    state = state.copyWith(messages: msgs);
   }
 
-  void _onAgentList(AgentList e) {
-    final activeId = e.list.activeAgentId;
-    final agents = e.list.agents;
-
-    // Mark active agent in the list
-    final updated = agents.map((a) {
-      return a.copyWith(active: a.id == activeId);
-    }).toList();
-
-    state = state.copyWith(
-      agents: updated,
-      activeAgentId: activeId,
-      lastSeq: e.envelope.seq,
-    );
+  void _onDomBlockUpdate(Map<String, dynamic> event) {
+    final messageId = event['messageId'] as String?;
+    final blockId = event['blockId'] as String?;
+    final patch = event['patch'] as Map<String, dynamic>?;
+    if (messageId == null || blockId == null || patch == null) return;
+    final msgs = List<MirrorMessage>.from(state.messages);
+    final mi = msgs.indexWhere((m) => m.id == messageId);
+    if (mi < 0) return;
+    final bi = msgs[mi].blocks.indexWhere((b) => b.id == blockId);
+    if (bi < 0) return;
+    final b = msgs[mi].blocks[bi];
+    if (patch.containsKey('content')) {
+      b.content = patch['content'] as String;
+      b.visibleContent = b.content;
+    }
+    if (patch.containsKey('status')) {
+      b.status = MirrorStatus.fromJson(patch['status'] as String);
+    }
+    state = state.copyWith(messages: msgs);
   }
 
-  void _onAgentSwitched(AgentSwitched e) {
-    state = state.copyWith(
-      activeAgentId: e.switched.toAgentId,
-      lastSeq: e.envelope.seq,
-    );
+  void _onDomMessageEnd(Map<String, dynamic> event) {
+    final messageId = event['messageId'] as String?;
+    final status = event['status'] as String?;
+    if (messageId == null) return;
+    final msgs = List<MirrorMessage>.from(state.messages);
+    final mi = msgs.indexWhere((m) => m.id == messageId);
+    if (mi < 0) return;
+    if (status != null) msgs[mi].status = MirrorStatus.fromJson(status);
+    for (final b in msgs[mi].blocks) {
+      if (b.status == MirrorStatus.streaming) b.status = MirrorStatus.completed;
+    }
+    state = state.copyWith(messages: msgs, isSending: false);
   }
 
-  /// Typewriter ticker: advance visibleContent toward content
-  void _startTypewriter() {
-    _typewriterTimer?.cancel();
-    _typewriterTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
-      var changed = false;
-      final msgs = List<MirrorMessage>.from(state.messages);
-      for (var m = 0; m < msgs.length; m++) {
-        for (var b = 0; b < msgs[m].blocks.length; b++) {
-          final block = msgs[m].blocks[b];
-          if (block.visibleContent.length >= block.content.length) continue;
-          final remaining = block.content.length - block.visibleContent.length;
-          final step = remaining > 100 ? 20 : (remaining > 20 ? 8 : 4);
-          final end = (block.visibleContent.length + step)
-              .clamp(0, block.content.length);
-          msgs[m] = msgs[m].copyWith(
-            blocks: () {
-              final updated = List<MirrorBlock>.from(msgs[m].blocks);
-              updated[b] = block.copyWith(
-                visibleContent: block.content.substring(0, end),
-              );
-              return updated;
-            },
-          );
-          changed = true;
-          break; // one block per tick
+void sendMessage(String text) {
+    if (text.trim().isEmpty || state.isSending) return;
+    state = state.copyWith(isSending: true, clearError: true);
+    if (_bridgeClient != null) {
+      _bridgeClient!.sendMessage(text);
+      // Bridge will push session.snapshot after sending, reset isSending there
+    } else if (_cdpClient != null) {
+      _cdpClient!
+          .evaluate(DomObserver.buildSendPromptScript(text, true))
+          .catchError((_) => state = state.copyWith(isSending: false));
+    }
+  }
+
+  void stopGeneration() {
+    if (_bridgeClient != null) {
+      _bridgeClient!.stopGeneration();
+    } else {
+      _cdpClient?.evaluate(DomObserver.buildStopGenerationScript());
+    }
+  }
+
+  Future<void> listSessions({Duration timeout = const Duration(seconds: 2)}) async {
+    if (state.connectionStatus != ConnectionStatus.connected) return;
+    if (_bridgeClient != null) {
+      state = state.copyWith(isLoadingSessions: true);
+      _bridgeClient!.listSessions();
+      return;
+    }
+    if (_cdpClient == null) return;
+    if (_listSessionsCompleter != null && !_listSessionsCompleter!.isCompleted) {
+      return _listSessionsCompleter!.future;
+    }
+    final completer = Completer<void>();
+    _listSessionsCompleter = completer;
+    state = state.copyWith(isLoadingSessions: true);
+    _listSessionsTimeoutTimer = Timer(timeout, () => _completeListSessionsRequest());
+    try {
+      await _cdpClient!.evaluate(DomObserver.buildOpenSessionSidebarScript());
+      await Future.delayed(const Duration(milliseconds: 200));
+      final result = await _cdpClient!.evaluate(DomObserver.buildSessionListScript());
+      if (result is String) {
+        final parsed = jsonDecode(result) as Map<String, dynamic>;
+        if (parsed['ok'] == true && parsed['result'] != null) {
+          _onSessionListData(parsed['result'] as Map<String, dynamic>);
         }
-        if (changed) break;
       }
-      if (changed) {
-        state = state.copyWith(messages: msgs);
-      }
+    } catch (_) {}
+    _completeListSessionsRequest();
+  }
+
+  void _onSessionListData(Map<String, dynamic> data) {
+    final rawSessions = data['sessions'] as List<dynamic>? ?? [];
+    final activeId = data['activeSessionId'] as String?;
+    final sessions = rawSessions.map((s) {
+      final map = s as Map<String, dynamic>;
+      return MirrorChatSession(
+        sessionId: map['sessionId'] as String? ?? '',
+        title: map['title'] as String? ?? '',
+        index: map['index'] as int? ?? 0,
+        active: map['active'] as bool? ?? false,
+        updatedAt: map['updatedAt'] as String?,
+        source: map['source'] as String? ?? 'dom',
+      );
+    }).toList();
+    if (activeId != null && activeId != state.activeSessionId && state.activeSessionId != null) {
+      state = state.copyWith(messages: const [], activeSessionId: activeId, sessions: sessions, isLoadingSessions: false, isSwitchingSession: false);
+    } else {
+      state = state.copyWith(sessions: sessions, activeSessionId: activeId ?? state.activeSessionId, isLoadingSessions: false);
+    }
+  }
+
+  void switchSession(String sessionId, {int? index, String? title}) {
+    if (_bridgeClient != null) {
+      state = state.copyWith(isSwitchingSession: true);
+      _bridgeClient!.switchSession(sessionId, index: index, title: title);
+      return;
+    }
+    if (_cdpClient == null) return;
+    state = state.copyWith(isSwitchingSession: true);
+    if (index != null) _cdpClient!.evaluate(DomObserver.buildSwitchSessionScript(index));
+    _scheduleSessionListRefresh();
+  }
+
+  void newSession() {
+    if (_bridgeClient != null) {
+      _bridgeClient!.newSession();
+      return;
+    }
+    if (_cdpClient == null) return;
+    _cdpClient!.evaluate(DomObserver.buildNewSessionScript());
+    _scheduleSessionListRefresh();
+  }
+
+  void _scheduleSessionListRefresh() {
+    Future.delayed(const Duration(milliseconds: 600), () => listSessions());
+  }
+
+  void listSlashCommands({String? query}) {
+    if (_bridgeClient != null) {
+      _bridgeClient!.listSlashCommands(query: query);
+      return;
+    }
+    if (_cdpClient == null) return;
+    _cdpClient!.evaluate(DomObserver.buildSlashListScript(query));
+    Future.delayed(const Duration(milliseconds: 300), () {
+      _cdpClient!.evaluate(DomObserver.buildScanSuggestWidgetScript()).then((result) {
+        if (result is String) {
+          try {
+            final parsed = jsonDecode(result) as Map<String, dynamic>;
+            if (parsed['ok'] == true && parsed['result'] != null) {
+              final items = (parsed['result']['items'] as List<dynamic>?) ?? [];
+              final commands = items.map((i) {
+                final map = i as Map<String, dynamic>;
+                return MirrorSlashCommandItem(id: map['id'] as String? ?? '', label: map['label'] as String? ?? '', title: map['title'] as String? ?? '', description: map['description'] as String?, detail: map['detail'] as String?, index: map['index'] as int? ?? 0, source: map['source'] as String? ?? 'dom');
+              }).toList();
+              state = state.copyWith(slashCommands: commands);
+            }
+          } catch (_) {}
+        }
+      });
+    });
+    Future.delayed(const Duration(milliseconds: 600), () {
+      _cdpClient?.evaluate(DomObserver.buildRestoreInputScript());
     });
   }
 
-  /// Clear the error message
+  void applySlashCommand(int index, {bool insertOnly = false}) {
+    if (_bridgeClient != null) {
+      _bridgeClient!.applySlashCommand(index, insertOnly: insertOnly);
+      return;
+    }
+    if (_cdpClient == null) return;
+    _cdpClient!.evaluate(DomObserver.buildApplySlashScript(index, insertOnly));
+  }
+
+  void listAgents() {
+    if (_bridgeClient != null) {
+      _bridgeClient!.listAgents();
+      return;
+    }
+    if (_cdpClient == null) return;
+    _cdpClient!.evaluate(DomObserver.buildAgentListScript());
+    Future.delayed(const Duration(milliseconds: 350), () {
+      _cdpClient!.evaluate(DomObserver.buildScanAgentListScript()).then((result) {
+        if (result is String) {
+          try {
+            final parsed = jsonDecode(result) as Map<String, dynamic>;
+            if (parsed['ok'] == true && parsed['result'] != null) {
+              final data = parsed['result'] as Map<String, dynamic>;
+              final rawAgents = data['agents'] as List<dynamic>? ?? [];
+              final activeId = data['activeAgentId'] as String?;
+              final agents = rawAgents.map((a) {
+                final map = a as Map<String, dynamic>;
+                return MirrorAgentItem(id: map['id'] as String? ?? '', name: map['name'] as String? ?? '', description: map['description'] as String?, index: map['index'] as int? ?? 0, active: map['active'] as bool? ?? false, source: map['source'] as String? ?? 'dom');
+              }).toList();
+              state = state.copyWith(agents: agents, activeAgentId: activeId);
+            }
+          } catch (_) {}
+        }
+      });
+    });
+  }
+
+  void switchAgent(String? agentId, {int? index, String? name}) {
+    if (_bridgeClient != null) {
+      _bridgeClient!.switchAgent(agentId, index: index, name: name);
+      return;
+    }
+    if (_cdpClient == null) return;
+    if (index != null) _cdpClient!.evaluate(DomObserver.buildSwitchAgentScript(index));
+  }
+
+  void refresh() {
+    if (_bridgeClient != null) {
+      state = state.copyWith(isLoadingSessions: true);
+      _bridgeClient!.refresh();
+      return;
+    }
+    if (_cdpClient == null) return;
+    state = state.copyWith(isLoadingSessions: true);
+    _cdpClient!.evaluate(DomObserver.buildSnapshotScript()).then((result) {
+      if (result is String) {
+        try {
+          final parsed = jsonDecode(result) as Map<String, dynamic>;
+          if (parsed['ok'] == true && parsed['result'] != null) {
+            final data = parsed['result'] as Map<String, dynamic>;
+            final rawMessages = data['messages'] as List<dynamic>? ?? [];
+            final messages = rawMessages.map((m) => MirrorMessage.fromJson(m as Map<String, dynamic>)).toList();
+            state = state.copyWith(messages: messages, isLoadingSessions: false);
+          }
+        } catch (_) {}
+      }
+    }).catchError((_){state=state.copyWith(isLoadingSessions:false);});
+  }
+
   void clearError() {
     state = state.copyWith(clearError: true);
   }
 
   @override
   void dispose() {
-    _typewriterTimer?.cancel();
-    _messageSub?.cancel();
-    _statusSub?.cancel();
-    _wsService?.dispose();
+    _listSessionsTimeoutTimer?.cancel();
+    _cdpSub?.cancel();
+    _cdpClient?.dispose();
+    _bridgeSub?.cancel();
+    _bridgeClient?.dispose();
     super.dispose();
+  }
+
+  void _completeListSessionsRequest() {
+    _listSessionsTimeoutTimer?.cancel();
+    _listSessionsTimeoutTimer = null;
+    final completer = _listSessionsCompleter;
+    _listSessionsCompleter = null;
+    if (!(completer?.isCompleted ?? true)) completer!.complete();
+    state = state.copyWith(isLoadingSessions: false);
+  }
+
+  static BlockType _parseBlockType(String? type) {
+    switch (type) {
+      case 'thinking': return BlockType.thinking;
+      case 'code_block': return BlockType.codeBlock;
+      case 'tool_call': return BlockType.toolCall;
+      case 'artifact': return BlockType.artifact;
+      default: return BlockType.text;
+    }
   }
 }
 
-/// The main chat provider
-final chatProvider =
-    StateNotifierProvider<ChatNotifier, ChatState>((ref) => ChatNotifier());
+final chatProvider = StateNotifierProvider<ChatNotifier, ChatState>((ref) {
+  return ChatNotifier();
+});

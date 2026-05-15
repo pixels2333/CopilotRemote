@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/message.dart';
 
 class CodeBlockView extends StatelessWidget {
@@ -14,52 +15,57 @@ class CodeBlockView extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          color: colorScheme.surfaceContainerLowest,
-          border: Border.all(
-            color: colorScheme.outline.withOpacity(0.2),
-          ),
+        decoration: const BoxDecoration(
+          borderRadius: BorderRadius.all(Radius.circular(10)),
+          color: Color(0xFF18181B),
+          border: Border.fromBorderSide(BorderSide(color: Color(0xFF27272A))),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerLow,
-                borderRadius: const BorderRadius.only(
+              decoration: const BoxDecoration(
+                color: Color(0xFF1F1F23),
+                borderRadius: BorderRadius.only(
                   topLeft: Radius.circular(10),
                   topRight: Radius.circular(10),
                 ),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.code_rounded,
+                  const Icon(Icons.code_rounded,
                       size: 14,
-                      color: colorScheme.onSurface.withOpacity(0.5)),
+                      color: Color(0xFF71717A)),
                   const SizedBox(width: 6),
                   Text(
                     lang.isNotEmpty ? lang : 'code',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
-                      color: colorScheme.onSurface.withOpacity(0.5),
+                      color: Color(0xFF71717A),
                       letterSpacing: 0.5,
                     ),
                   ),
                   const Spacer(),
                   InkWell(
-                    onTap: () {
-                      // Copy to clipboard — simplified for now
+                    onTap: () async {
+                      await Clipboard.setData(ClipboardData(text: code));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Copied to clipboard'),
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
                     },
                     borderRadius: BorderRadius.circular(4),
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
                       child: Icon(Icons.copy_rounded,
                           size: 14,
-                          color: colorScheme.onSurface.withOpacity(0.4)),
+                          color: Color(0xFF71717A)),
                     ),
                   ),
                 ],
@@ -72,11 +78,11 @@ class CodeBlockView extends StatelessWidget {
                 padding: const EdgeInsets.all(10),
                 child: SelectableText(
                   code,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 12,
                     fontFamily: 'monospace',
                     height: 1.6,
-                    color: colorScheme.onSurface.withOpacity(0.85),
+                    color: Color(0xFFE4E4E7),
                   ),
                 ),
               ),

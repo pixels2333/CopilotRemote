@@ -11,6 +11,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import CDP from 'chrome-remote-interface';
+import type { WebSocket } from 'ws';
 import { WsGateway } from './wsGateway.js';
 import {
 	type BridgeDomEvent,
@@ -22,9 +23,11 @@ import {
 import { listTargets, pickBestTarget, probeForCopilot } from './cdpTargetResolver.js';
 import {
 	buildObserverScript,
+	buildCurrentSnapshotScript,
 	buildSendPromptScript,
 	buildFocusInputScript,
 	buildStopGenerationScript,
+	buildOpenSessionSidebarScript,
 	buildSessionListScript,
 	buildSwitchSessionScript,
 	buildNewSessionScript,
@@ -90,10 +93,10 @@ export class CopilotMirrorBridge {
 		this.heartbeatTimer = setInterval(() => {
 			this.broadcastStatus();
 		}, this.options.heartbeatMs);
-		// Periodic session list scan
+		// Periodic session list scan (every 3s for near-real-time updates)
 		this.sessionScanTimer = setInterval(() => {
 			void this.scanSessions();
-		}, this.options.heartbeatMs * 2);
+		}, 3000);
 		// Periodic agent list scan
 		this.agentScanTimer = setInterval(() => {
 			void this.scanAgents();
@@ -129,9 +132,14 @@ export class CopilotMirrorBridge {
 
 	private async connectToCopilotTarget(): Promise<void> {
 		const targets = await listTargets(this.options.cdpHost, this.options.cdpPort);
+		const candidatePool = targets
+			.filter(t => t.type === 'page' || t.type === 'webview')
+			.filter(t => t.score > 0)
+			.sort((a, b) => b.score - a.score);
+
 		const candidate = pickBestTarget(targets);
 
-		if (!candidate) {
+		if (!candidate || candidatePool.length === 0) {
 			this.currentTarget = undefined;
 			this.broadcastStatus('Copilot target not found.');
 			return;
@@ -142,75 +150,95 @@ export class CopilotMirrorBridge {
 			return;
 		}
 
-		// Close previous session
-		if (this.cdpClient) {
-			await this.cdpClient.close().catch(() => undefined);
-			this.cdpClient = undefined;
-			this.injected = false;
-		}
+		for (const nextCandidate of candidatePool) {
+			let client: Client | undefined;
+			try {
+				client = await CDP({
+					host: this.options.cdpHost,
+					port: this.options.cdpPort,
+					target: nextCandidate.webSocketDebuggerUrl ?? nextCandidate.id
+				});
+				const probeClient = client;
 
-		this.currentTarget = {
-			id: candidate.id,
-			url: candidate.url,
-			title: candidate.title,
-			type: candidate.type
-		} as Target;
+				await client.Runtime.enable();
+				await client.Page.enable().catch(() => undefined);
 
-		const client = await CDP({
-			host: this.options.cdpHost,
-			port: this.options.cdpPort,
-			target: this.currentTarget
-		});
+				const probe = await probeForCopilot(async expr => {
+					const r = await probeClient.Runtime.evaluate({ expression: expr, awaitPromise: true, returnByValue: true });
+					return r.result.value;
+				});
 
-		this.cdpClient = client;
+				if (!probe.isCopilot) {
+					await client.close().catch(() => undefined);
+					continue;
+				}
 
-		client.on('disconnect', () => {
-			this.cdpClient = undefined;
-			this.currentTarget = undefined;
-			this.injected = false;
-			this.broadcastStatus('CDP disconnected.');
-		});
+				if (this.cdpClient) {
+					await this.cdpClient.close().catch(() => undefined);
+					this.cdpClient = undefined;
+					this.injected = false;
+				}
 
-		await client.Runtime.enable();
-		await client.Page.enable().catch(() => undefined);
+				this.currentTarget = {
+					id: nextCandidate.id,
+					url: nextCandidate.url,
+					title: nextCandidate.title,
+					type: nextCandidate.type
+				} as Target;
 
-		// Binding callback for structured events
-		client.Runtime.bindingCalled(params => {
-			if (params.name !== '__copilotMirrorEmit') return;
-			this.handleInjectedPayload(params.payload);
-		});
+				this.cdpClient = client;
 
-		// Fallback: console.log capture
-		client.Runtime.consoleAPICalled(params => {
-			const first = params.args[0];
-			if (first?.value && typeof first.value === 'string' && first.value.startsWith('[CopilotMirror]')) {
-				this.handleInjectedPayload(first.value.slice('[CopilotMirror]'.length));
+				client.on('disconnect', () => {
+					this.cdpClient = undefined;
+					this.currentTarget = undefined;
+					this.injected = false;
+					this.broadcastStatus('CDP disconnected.');
+				});
+
+				// Binding callback for structured events
+				client.Runtime.bindingCalled(params => {
+					try {
+						if (params.name !== '__copilotMirrorEmit') return;
+						this.handleInjectedPayload(params.payload);
+					} catch (e) {
+						console.error('[CopilotMirror] bindingCalled error:', e);
+					}
+				});
+
+				// Fallback: console.log capture
+				client.Runtime.consoleAPICalled(params => {
+					try {
+						const first = params.args[0];
+						if (first?.value && typeof first.value === 'string' && first.value.startsWith('[CopilotMirror]')) {
+							this.handleInjectedPayload(first.value.slice('[CopilotMirror]'.length));
+						}
+					} catch (e) {
+						console.error('[CopilotMirror] consoleAPICalled error:', e);
+					}
+				});
+
+				// Re-inject on page load (retry / navigation)
+				client.Page.loadEventFired(async () => {
+					this.injected = false;
+					// Re-add binding (lost after page navigation); CDP client must exist here
+					const cdp = this.cdpClient;
+					if (cdp) await cdp.Runtime.addBinding({ name: '__copilotMirrorEmit' }).catch(() => undefined);
+					setTimeout(() => void this.injectObserverScript().catch(() => undefined), 200);
+				});
+
+				await client.Runtime.addBinding({ name: '__copilotMirrorEmit' }).catch(() => undefined);
+				await this.injectObserverScript();
+				this.broadcastStatus(`CDP connected: ${nextCandidate.title}`);
+				return;
+			} catch {
+				await client?.close().catch(() => undefined);
 			}
-		});
-
-		// Re-inject on page load
-		client.Page.loadEventFired(() => {
-			this.injected = false;
-			setTimeout(() => void this.injectObserverScript(), 800);
-		});
-
-		// Probe to confirm this is the Copilot page
-		const probe = await probeForCopilot(async expr => {
-			const r = await client.Runtime.evaluate({ expression: expr, awaitPromise: true, returnByValue: true });
-			return r.result.value;
-		});
-
-		if (!probe.isCopilot) {
-			await client.close().catch(() => undefined);
-			this.cdpClient = undefined;
-			this.currentTarget = undefined;
-			this.broadcastStatus(`Probe failed (${probe.reason}), trying next target.`);
-			return;
 		}
 
-		await client.Runtime.addBinding({ name: '__copilotMirrorEmit' }).catch(() => undefined);
-		await this.injectObserverScript();
-		this.broadcastStatus(`CDP connected: ${candidate.title}`);
+		this.currentTarget = undefined;
+		this.cdpClient = undefined;
+		this.injected = false;
+		this.broadcastStatus('Copilot target probe failed for all candidates.');
 	}
 
 	private async injectObserverScript(): Promise<void> {
@@ -223,7 +251,7 @@ export class CopilotMirrorBridge {
 			returnByValue: true
 		});
 
-		const value = result.result.value as { ok?: boolean; reason?: string } | undefined;
+		const value = this.parseEvaluateValue<{ ok?: boolean; reason?: string }>(result.result.value);
 		if (!value?.ok) {
 			this.injected = false;
 			this.broadcastStatus(`Observer injection failed: ${value?.reason ?? 'unknown'}`);
@@ -246,50 +274,6 @@ export class CopilotMirrorBridge {
 		switch (event.kind) {
 			case 'snapshot':
 				this.handleSnapshot(event);
-				break;
-			case 'message':
-				if (event.message) {
-					this.snapshot.messages.push(event.message);
-					this.wsGateway.broadcast('message.start', { message: event.message });
-				}
-				break;
-			case 'block':
-				if (event.messageId && event.block) {
-					this.wsGateway.broadcast('block.start', {
-						messageId: event.messageId,
-						block: event.block
-					});
-				}
-				break;
-			case 'delta':
-				this.handleDelta(event);
-				break;
-			case 'blockUpdate':
-				if (event.messageId && event.blockId && event.patch) {
-					this.wsGateway.broadcast('block.update', {
-						messageId: event.messageId,
-						blockId: event.blockId,
-						patch: event.patch
-					});
-				}
-				break;
-			case 'blockEnd':
-				if (event.messageId && event.blockId) {
-					this.wsGateway.broadcast('block.end', {
-						messageId: event.messageId,
-						blockId: event.blockId,
-						status: event.status ?? 'completed',
-						finalLength: event.finalLength
-					});
-				}
-				break;
-			case 'messageEnd':
-				if (event.messageId) {
-					this.wsGateway.broadcast('message.end', {
-						messageId: event.messageId,
-						status: event.status ?? 'completed'
-					});
-				}
 				break;
 			case 'heartbeat':
 				break;
@@ -323,36 +307,17 @@ export class CopilotMirrorBridge {
 		});
 	}
 
-	private handleDelta(event: BridgeDomEvent): void {
-		if (!event.messageId || !event.blockId || !event.blockType) return;
-
-		const offset = event.offset ?? 0;
-		const chunk = event.chunk ?? '';
-		const previous = this.snapshot.blockContents.get(event.blockId) ?? '';
-
-		if (offset === previous.length) {
-			this.snapshot.blockContents.set(event.blockId, previous + chunk);
-		} else if (event.format !== 'json') {
-			this.snapshot.blockContents.set(event.blockId, chunk);
-		}
-
-		this.wsGateway.broadcast('block.delta', {
-			messageId: event.messageId,
-			blockId: event.blockId,
-			blockType: event.blockType,
-			op: offset === previous.length ? 'append' : 'replace',
-			offset,
-			chunk,
-			format: event.format ?? 'markdown',
-			done: false
-		});
-	}
-
 	// ── Reverse command handlers ─────────────────────────────────
 
 	private wireGatewayHandlers(): void {
 		this.wsGateway.onSendMessage = async (payload, requestId) => {
 			await this.sendPromptToCopilot(payload.text, payload.options?.submit ?? true);
+			setTimeout(() => {
+				void this.forceSnapshot();
+			}, 350);
+			setTimeout(() => {
+				void this.forceSnapshot();
+			}, 1400);
 		};
 
 		this.wsGateway.onStopGeneration = async () => {
@@ -385,7 +350,7 @@ export class CopilotMirrorBridge {
 				awaitPromise: true,
 				returnByValue: true
 			});
-			const value = result.result.value as { ok?: boolean; reason?: string } | undefined;
+			const value = this.parseEvaluateValue<{ ok?: boolean; reason?: string }>(result.result.value);
 			if (!value?.ok) {
 				throw new Error(value?.reason ?? 'artifact not found in page DOM');
 			}
@@ -402,6 +367,25 @@ export class CopilotMirrorBridge {
 
 		this.wsGateway.onNewSession = async (requestId) => {
 			await this.handleNewSessionCommand(requestId);
+		};
+
+		this.wsGateway.onClientHello = async (ws: WebSocket) => {
+			try {
+				const messages = await this.collectCurrentSnapshotMessages();
+				if (messages.length > 0) {
+					this.wsGateway.sendSnapshot(ws, messages, this.options.sessionId);
+					return true;
+				}
+			} catch {
+				// CDP may be disconnected (e.g. during retry); fall through to cached snapshot
+			}
+
+			if (this.snapshot.messages.length > 0) {
+				this.wsGateway.sendSnapshot(ws, this.snapshot.messages, this.options.sessionId);
+				return true;
+			}
+
+			return false;
 		};
 
 		// ── Slash command handlers ──
@@ -421,22 +405,110 @@ export class CopilotMirrorBridge {
 		this.wsGateway.onSwitchAgent = async (agentId, index, name, requestId) => {
 			await this.handleSwitchAgentCommand(agentId, index, name, requestId);
 		};
+
+		// ── Refresh handler ──
+		this.wsGateway.onRefresh = async (requestId) => {
+			try {
+			// Re-inject observer script (re-find DOM list, re-attach polling)
+				this.injected = false;
+			await this.injectObserverScript();
+			// Force fresh snapshot
+			await this.forceSnapshot();
+		} catch {
+			// If CDP is down, try reconnecting first
+			await this.connectToCopilotTarget().catch(() => undefined);
+		}
+	};
+
+	// ── Agent handlers (continued) ──
+		this.wsGateway.onListAgents = async (requestId) => {
+		await this.handleListAgentsCommand(requestId);
+	};
+
+		this.wsGateway.onSwitchAgent = async (agentId, index, name, requestId) => {
+		await this.handleSwitchAgentCommand(agentId, index, name, requestId);
+	};
+
+	// ── Slash command handlers (continued) ──
 	}
 
 	async sendPromptToCopilot(text: string, submit = true): Promise<void> {
 		const client = this.requireCdpClient();
-		const script = buildSendPromptScript(text, submit);
 
-		const result = await client.Runtime.evaluate({
-			expression: script,
+		// Step 1: Focus + check working state; if working, stop generation first
+		await client.Runtime.evaluate({
+			expression: `(() => {
+				const input = document.querySelector('.interactive-input-editor .native-edit-context, .interactive-input-editor [role="textbox"]');
+				if (input instanceof HTMLElement) input.focus();
+			})()`,
+			awaitPromise: true,
+			returnByValue: true
+		});
+		await new Promise(resolve => setTimeout(resolve, 200));
+
+		// Check if container is in working state
+		const workingCheck = await client.Runtime.evaluate({
+			expression: `(() => {
+				const c = document.querySelector('.chat-input-container');
+				return c instanceof HTMLElement && c.classList.contains('working');
+			})()`,
 			awaitPromise: true,
 			returnByValue: true
 		});
 
-		const value = result.result.value as { ok?: boolean; reason?: string } | undefined;
-		if (!value?.ok) {
-			throw new Error(`sendPrompt failed: ${value?.reason ?? 'unknown'}`);
+		if (workingCheck.result.value) {
+			// Click cancel button to stop current generation
+			await client.Runtime.evaluate({
+				expression: `(() => {
+					const btn = Array.from(document.querySelectorAll('.action-label')).find(el => (el.getAttribute('aria-label')||'').includes('取消'));
+					if (btn instanceof HTMLElement) { btn.click(); return true; }
+					return false;
+				})()`,
+				awaitPromise: true,
+				returnByValue: true
+			});
+			await new Promise(resolve => setTimeout(resolve, 1200));
 		}
+
+		// Step 2: Clear input and insert text via CDP
+		await client.Input.dispatchKeyEvent({ type: 'rawKeyDown', windowsVirtualKeyCode: 17, code: 'ControlLeft', key: 'Control', modifiers: 2 });
+		await client.Input.dispatchKeyEvent({ type: 'rawKeyDown', windowsVirtualKeyCode: 65, code: 'KeyA', key: 'a', text: 'a', unmodifiedText: 'a', modifiers: 2 });
+		await client.Input.dispatchKeyEvent({ type: 'keyUp', windowsVirtualKeyCode: 65, code: 'KeyA', key: 'a', modifiers: 2 });
+		await client.Input.dispatchKeyEvent({ type: 'keyUp', windowsVirtualKeyCode: 17, code: 'ControlLeft', key: 'Control' });
+		await client.Input.dispatchKeyEvent({ type: 'rawKeyDown', windowsVirtualKeyCode: 8, code: 'Backspace', key: 'Backspace' });
+		await client.Input.dispatchKeyEvent({ type: 'keyUp', windowsVirtualKeyCode: 8, code: 'Backspace', key: 'Backspace' });
+		await client.Input.insertText({ text });
+		await new Promise(resolve => setTimeout(resolve, 800));
+
+		if (!submit) {
+			return;
+		}
+
+		// Step 3: Try clicking submit button
+		const clickResult = await client.Runtime.evaluate({
+			expression: `(() => {
+				const container = document.querySelector('.chat-input-container');
+				if (!container) return JSON.stringify({ ok: false, reason: 'no_container' });
+				const controls = Array.from(container.querySelectorAll('button, a, [role="button"], .action-label, .monaco-button'));
+				const match = (patterns) => controls.find(el => {
+					const a = (el.getAttribute('aria-label')||'').trim();
+					const t = (el.getAttribute('title')||'').trim();
+					const x = (el.textContent||'').trim();
+					return patterns.some(p => p.test((a+' '+t+' '+x).toLowerCase()));
+				});
+				const target = match([/发送/,/submit/,/send/,/arrow[- ]?up/,/paper plane/,/添加到队列/,/queue/]);
+				if (target instanceof HTMLElement) { target.click(); return JSON.stringify({ ok: true }); }
+				return JSON.stringify({ ok: false, reason: 'submit_button_not_found' });
+			})()`,
+			awaitPromise: true,
+			returnByValue: true
+		});
+		const clickValue = this.parseEvaluateValue<{ ok?: boolean }>(clickResult.result.value);
+		if (clickValue?.ok) return;
+
+		// Step 4: Fallback — CDP Enter
+		await client.Input.dispatchKeyEvent({ type: 'rawKeyDown', windowsVirtualKeyCode: 13, code: 'Enter', key: 'Enter' });
+		await client.Input.dispatchKeyEvent({ type: 'keyUp', windowsVirtualKeyCode: 13, code: 'Enter', key: 'Enter' });
 	}
 
 	// ── Status broadcast ────────────────────────────────────────
@@ -467,6 +539,44 @@ export class CopilotMirrorBridge {
 		return this.cdpClient;
 	}
 
+	private parseEvaluateValue<T>(value: unknown): T | undefined {
+		if (value == null) return undefined;
+		if (typeof value === 'string') {
+			try {
+				return JSON.parse(value) as T;
+			} catch {
+				return undefined;
+			}
+		}
+		return value as T;
+	}
+
+	private async collectCurrentSnapshotMessages(): Promise<MirrorMessage[]> {
+		if (!this.cdpClient) return [];
+
+		try {
+			const result = await this.evaluateWithResult<{ messages?: MirrorMessage[] }>(buildCurrentSnapshotScript());
+			const messages = result.ok && result.result?.messages ? result.result.messages : [];
+			if (messages.length === 0) {
+				return [];
+			}
+
+			this.snapshot.messages = messages;
+			this.snapshot.blockContents.clear();
+			for (const message of messages) {
+				for (const block of message.blocks) {
+					if (typeof block.content === 'string') {
+						this.snapshot.blockContents.set(block.id, block.content);
+					}
+				}
+			}
+
+			return messages;
+		} catch {
+			return [];
+		}
+	}
+
 	// ── Session management ──────────────────────────────────────
 
 	private async evaluateWithResult<T = unknown>(expression: string): Promise<{ ok: boolean; reason?: string; result?: T }> {
@@ -476,10 +586,13 @@ export class CopilotMirrorBridge {
 			awaitPromise: true,
 			returnByValue: true
 		});
-		const val = r.result.value as ({ ok: boolean; reason?: string } & Record<string, unknown>) | undefined;
+		const val = this.parseEvaluateValue<({ ok: boolean; reason?: string } & Record<string, unknown>)>(r.result.value);
 		if (!val) return { ok: false, reason: 'no_result' };
 		const { ok, reason, ...rest } = val;
-		return { ok: !!ok, reason: reason as string | undefined, result: rest as unknown as T };
+		const unwrapped = Object.prototype.hasOwnProperty.call(rest, 'result')
+			? rest['result']
+			: rest;
+		return { ok: !!ok, reason: reason as string | undefined, result: unwrapped as T };
 	}
 
 	private async scanSessions(): Promise<void> {
@@ -528,30 +641,32 @@ export class CopilotMirrorBridge {
 	private async forceSnapshot(): Promise<void> {
 		if (!this.cdpClient) return;
 		try {
-			await this.evaluateInCopilotPage(`
-				window.__copilotMirrorState.messageFingerprints = new Map();
-				window.__copilotMirrorState.blockContent = new Map();
-			`);
-			// Re-run flushSnapshot
-			await this.evaluateInCopilotPage(`
-				(() => {
-					if (typeof flushSnapshot === 'function') flushSnapshot();
-					else {
-						// Re-inject observer to get fresh snapshot
-						const list = document.querySelector('[id*="auxiliarybar"] .monaco-list');
-						if (list) {
-							const obs = new MutationObserver(() => {});
-							obs.disconnect();
-						}
-					}
-				})()
-			`);
+			const messages = await this.collectCurrentSnapshotMessages();
+			if (messages.length > 0) {
+				this.wsGateway.broadcast('session.snapshot', {
+					mode: 'full',
+					cursor: { seq: this.seq, snapshotVersion: Date.now() },
+					session: {
+						sessionId: this.options.sessionId,
+						title: 'Copilot Chat',
+						workspace: null,
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString()
+					},
+					messages
+				});
+			}
 		} catch {
 			// Silently attempt
 		}
 	}
 
 	private async handleListSessionsCommand(requestId?: string): Promise<void> {
+		const openResult = await this.evaluateWithResult(buildOpenSessionSidebarScript());
+		if (!openResult.ok) {
+			throw new Error(openResult.reason || 'Failed to open session sidebar');
+		}
+		await new Promise(resolve => setTimeout(resolve, 250));
 		const result = await this.evaluateWithResult<{ sessions: MirrorChatSessionItem[]; activeSessionId?: string }>(buildSessionListScript());
 		if (!result.ok || !result.result) {
 			throw new Error(result.reason || 'Failed to list sessions');
@@ -561,6 +676,12 @@ export class CopilotMirrorBridge {
 
 	private async handleSwitchSessionCommand(sessionId?: string, index?: number, title?: string, requestId?: string): Promise<void> {
 		if (!this.cdpClient) throw new Error('CDP not connected');
+
+		const openResult = await this.evaluateWithResult(buildOpenSessionSidebarScript());
+		if (!openResult.ok) {
+			throw new Error(openResult.reason || 'Failed to open session sidebar');
+		}
+		await new Promise(resolve => setTimeout(resolve, 250));
 
 		// If sessionId or title provided, first scan sessions to find the index
 		let targetIndex = index;
@@ -611,9 +732,26 @@ export class CopilotMirrorBridge {
 	}
 
 	private async handleNewSessionCommand(requestId?: string): Promise<void> {
+		const openResult = await this.evaluateWithResult(buildOpenSessionSidebarScript());
+		if (!openResult.ok) {
+			throw new Error(openResult.reason || 'Failed to open session sidebar');
+		}
+		await new Promise(resolve => setTimeout(resolve, 250));
+
 		const result = await this.evaluateWithResult(buildNewSessionScript());
 		if (!result.ok) {
 			throw new Error(result.reason || 'Failed to create new session');
+		}
+		// Wait for DOM to update, then broadcast updated session list
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		try {
+			const listResult = await this.evaluateWithResult<{ sessions: MirrorChatSessionItem[]; activeSessionId?: string }>(buildSessionListScript());
+			if (listResult.ok && listResult.result) {
+				this.lastActiveSessionId = listResult.result.activeSessionId;
+				this.wsGateway.broadcast('session.list', listResult.result as Record<string, unknown>, undefined, requestId);
+			}
+		} catch {
+			// Non-fatal: client can re-request
 		}
 	}
 
@@ -670,12 +808,11 @@ export class CopilotMirrorBridge {
 	private async scanAgents(): Promise<void> {
 		if (!this.cdpClient || !this.injected || this.switchingAgent) return;
 		try {
-			// Use ariaLabel from chat input to detect agent changes (non-invasive)
-			const result = await this.evaluateWithResult<{ agent: string; title: string; rawAria: string }>(buildGetActiveAgentScript());
+			const result = await this.evaluateWithResult<{ agent: string; agentId?: string; source?: string }>(buildGetActiveAgentScript());
 			if (!result.ok || !result.result) return;
 
-			const { agent } = result.result;
-			const agentId = agent.toLowerCase().replace(/[^a-z0-9]/g, '_');
+			const { agent, agentId: explicitAgentId } = result.result;
+			const agentId = explicitAgentId || agent.toLowerCase().replace(/[^a-z0-9]/g, '_');
 
 			// Detect active agent change
 			if (agentId && agentId !== this.lastActiveAgentId) {
@@ -696,7 +833,7 @@ export class CopilotMirrorBridge {
 	}
 
 	private async handleListAgentsCommand(requestId?: string): Promise<void> {
-		// Step 1: Open agent picker by clicking title
+		// Step 1: Open the actual agent picker in the chat input toolbar
 		const openResult = await this.evaluateWithResult(buildAgentListScript());
 		if (!openResult.ok) {
 			throw new Error(openResult.reason || 'Failed to open agent picker');
@@ -712,14 +849,16 @@ export class CopilotMirrorBridge {
 		await this.evaluateWithResult(buildCloseAgentPickerScript()).catch(() => undefined);
 
 		if (scanResult.ok && scanResult.result) {
-			const activeAgent = this.lastActiveAgentId;
 			const agentsList = (scanResult.result as Record<string, unknown>)['agents'] as Record<string, unknown>[];
+			const activeAgent = ((scanResult.result as Record<string, unknown>)['activeAgentId'] as string | undefined)
+				|| (agentsList.find(agent => Boolean(agent['active']))?.['id'] as string | undefined)
+				|| this.lastActiveAgentId;
+			if (activeAgent) this.lastActiveAgentId = activeAgent;
 			this.wsGateway.broadcast('agent.list', { agents: agentsList, activeAgentId: activeAgent } as Record<string, unknown>, undefined, requestId);
 		} else {
-			// Fallback: return current agent from ariaLabel
-			const fallback = await this.evaluateWithResult<{ agent: string; title: string }>(buildGetActiveAgentScript());
+			const fallback = await this.evaluateWithResult<{ agent: string; agentId?: string }>(buildGetActiveAgentScript());
 			const fallbackAgent = fallback.ok && fallback.result ? [{
-				id: (fallback.result.agent || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '_'),
+				id: fallback.result.agentId || (fallback.result.agent || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '_'),
 				name: fallback.result.agent || 'Unknown',
 				description: '',
 				index: 0,
@@ -745,6 +884,7 @@ export class CopilotMirrorBridge {
 
 		// Step 3: If index not given, scan to find the agent by id/name
 		let targetIndex = index;
+		let targetAgent: Record<string, unknown> | undefined;
 		if (targetIndex === undefined && (agentId || name)) {
 			const scanResult = await this.evaluateWithResult(buildScanAgentListScript());
 			if (scanResult.ok && scanResult.result) {
@@ -752,7 +892,10 @@ export class CopilotMirrorBridge {
 				const found = agents.find(a =>
 					a.id === agentId || a.name === name
 				);
-				if (found) targetIndex = found.index as number;
+				if (found) {
+					targetAgent = found;
+					targetIndex = found.index as number;
+				}
 			}
 		}
 
@@ -763,7 +906,7 @@ export class CopilotMirrorBridge {
 		}
 
 		// Step 4: Click the agent
-		const switchResult = await this.evaluateWithResult(buildSwitchAgentScript(targetIndex));
+		const switchResult = await this.evaluateWithResult<{ id?: string; name?: string }>(buildSwitchAgentScript(targetIndex));
 		if (!switchResult.ok) {
 			await this.evaluateWithResult(buildCloseAgentPickerScript()).catch(() => undefined);
 			throw new Error(switchResult.reason || 'Failed to switch agent');
@@ -773,18 +916,19 @@ export class CopilotMirrorBridge {
 		this.switchingAgent = true;
 		await new Promise(resolve => setTimeout(resolve, 600));
 
-		const confirmResult = await this.evaluateWithResult<{ agent: string; title: string }>(buildGetActiveAgentScript());
-		if (confirmResult.ok && confirmResult.result) {
-			const newAgent = confirmResult.result.agent.toLowerCase().replace(/[^a-z0-9]/g, '_');
+		const switchedAgentId = switchResult.result?.id || (targetAgent?.['id'] as string | undefined);
+		if (switchedAgentId) {
 			const fromAgentId = this.lastActiveAgentId;
-			this.lastActiveAgentId = newAgent;
+			this.lastActiveAgentId = switchedAgentId;
 
 			this.wsGateway.broadcast('agent.switched', {
 				fromAgentId,
-				toAgentId: newAgent,
+				toAgentId: switchedAgentId,
 				reason: 'client'
 			} as Record<string, unknown>, undefined, requestId);
 		}
+
+		await this.evaluateWithResult(buildCloseAgentPickerScript()).catch(() => undefined);
 
 		this.switchingAgent = false;
 	}

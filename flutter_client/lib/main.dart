@@ -21,8 +21,14 @@ class CopilotMirrorApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        colorSchemeSeed: const Color(0xFF6366F1),
+        scaffoldBackgroundColor: const Color(0xFF131315),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF6366F1),
+          brightness: Brightness.dark,
+          surface: const Color(0xFF1C1C1F),
+        ),
         useMaterial3: true,
+        fontFamily: 'sans-serif',
       ),
       home: const ChatScreen(),
     );

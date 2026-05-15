@@ -46,6 +46,8 @@ export class WsGateway {
 	onApplySlashCommand: ((index: number, insertOnly: boolean, requestId?: string) => Promise<void>) | undefined;
 	onListAgents: ((requestId?: string) => Promise<void>) | undefined;
 	onSwitchAgent: ((agentId: string | undefined, index: number | undefined, name: string | undefined, requestId?: string) => Promise<void>) | undefined;
+	onRefresh: ((requestId?: string) => Promise<void>) | undefined;
+	onClientHello: ((ws: WebSocket, requestId?: string) => Promise<boolean | void>) | undefined;
 	onCommand: ClientCommandHandler | undefined;
 
 	constructor(private options: BridgeOptions = DEFAULT_BRIDGE_OPTIONS) {
@@ -72,6 +74,10 @@ export class WsGateway {
 			ws.on('error', () => {
 				this.clients.delete(ws);
 			});
+		});
+
+		this.wss.on('error', (err) => {
+			console.error('[WsGateway] Server error:', err);
 		});
 	}
 
@@ -144,7 +150,7 @@ export class WsGateway {
 
 		switch (envelope.type) {
 			case 'client.hello':
-				this.handleHello(ws, envelope.payload as ClientHelloPayload, envelope.requestId);
+				void this.handleHello(ws, envelope.payload as ClientHelloPayload, envelope.requestId);
 				break;
 
 			case 'client.ping':
@@ -195,6 +201,10 @@ export class WsGateway {
 				void this.handleSwitchAgent(ws, envelope.payload as Record<string, unknown>, envelope.requestId);
 				break;
 
+			case 'client.command.refresh':
+				void this.handleRefresh(ws, envelope.requestId);
+				break;
+
 			default:
 				if (this.onCommand) {
 					void this.onCommand(envelope.type, envelope.payload, envelope.requestId, envelope.sessionId);
@@ -208,7 +218,7 @@ export class WsGateway {
 		}
 	}
 
-	private handleHello(ws: WebSocket, payload: ClientHelloPayload, requestId?: string): void {
+	private async handleHello(ws: WebSocket, payload: ClientHelloPayload, requestId?: string): Promise<void> {
 		// Auth check
 		if (this.currentOptions.authToken && payload.auth?.token !== this.currentOptions.authToken) {
 			this.sendTo(ws, 'server.error', {
@@ -258,6 +268,30 @@ export class WsGateway {
 				}
 				return;
 			}
+		}
+
+		// Prefer a live bridge-provided snapshot for fresh connections.
+		// This avoids replaying a stale buffered snapshot captured before the
+		// bridge reattached to the correct DOM list.
+		if (this.onClientHello) {
+			try {
+				const handled = await this.onClientHello(ws, requestId);
+				if (handled) {
+					return;
+				}
+			} catch {
+				// onClientHello may throw if CDP is disconnected; fall through to buffered events below
+			}
+		}
+
+		// Fresh connections do not currently send resume.lastSeq.
+		// Send the latest full snapshot so the client can render existing chat content immediately.
+		const latestSnapshot = [...this.eventBuffer]
+			.reverse()
+			.find(event => event.type === 'session.snapshot');
+		if (latestSnapshot) {
+			this.sendEnvelope(ws, latestSnapshot);
+			return;
 		}
 	}
 
@@ -533,25 +567,31 @@ export class WsGateway {
 
 		if (this.onSwitchAgent) {
 			try {
-				await this.onSwitchAgent(agentId, index, name, requestId);
-				this.sendTo(ws, 'server.ack', {
-					ok: true,
-					command: 'switchAgent',
-					acceptedAt: new Date().toISOString()
-				}, requestId);
-			} catch (error) {
-				this.sendTo(ws, 'server.error', {
-					code: 'SWITCH_AGENT_FAILED',
-					message: error instanceof Error ? error.message : 'Failed to switch agent.',
-					retryable: true
-				}, requestId);
+				await this.onSwitchAgent(
+					payload['agentId'] as string | undefined,
+					payload['index'] as number | undefined,
+					payload['name'] as string | undefined,
+					requestId
+				);
+				this.sendTo(ws, 'server.ack', { ok: true, command: 'switchAgent', acceptedAt: new Date().toISOString() }, requestId);
+			} catch {
+				this.sendTo(ws, 'server.error', { code: 'SWITCH_AGENT_FAILED', message: 'Failed to switch agent.', retryable: true }, requestId);
 			}
 		} else {
-			this.sendTo(ws, 'server.error', {
-				code: 'NOT_READY',
-				message: 'Bridge not ready.',
-				retryable: true
-			}, requestId);
+			this.sendTo(ws, 'server.error', { code: 'NOT_READY', message: 'Bridge not connected.', retryable: true }, requestId);
+		}
+	}
+
+	private async handleRefresh(ws: WebSocket, requestId?: string): Promise<void> {
+		if (this.onRefresh) {
+			try {
+				await this.onRefresh(requestId);
+				this.sendTo(ws, 'server.ack', { ok: true, command: 'refresh', acceptedAt: new Date().toISOString() }, requestId);
+			} catch (error) {
+				this.sendTo(ws, 'server.error', { code: 'REFRESH_FAILED', message: error instanceof Error ? error.message : 'Failed to refresh.', retryable: true }, requestId);
+			}
+		} else {
+			this.sendTo(ws, 'server.error', { code: 'NOT_READY', message: 'Bridge not connected.', retryable: true }, requestId);
 		}
 	}
 
@@ -612,10 +652,14 @@ export class WsGateway {
 	}
 
 	private sendEnvelope(client: WebSocket, envelope: MirrorEnvelope): void {
-		if (client.readyState !== WebSocket.OPEN) {
-			return;
+		try {
+			if (client.readyState !== WebSocket.OPEN) {
+				return;
+			}
+			client.send(JSON.stringify(envelope));
+		} catch {
+			// Client socket may be in bad state; silently skip
 		}
-		client.send(JSON.stringify(envelope));
 	}
 
 	private rememberEvent(envelope: MirrorEnvelope): void {
@@ -625,3 +669,4 @@ export class WsGateway {
 		}
 	}
 }
+

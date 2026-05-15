@@ -8,7 +8,7 @@ class ArtifactBlockView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final artifactName = block.title ?? 'Artifact';
+    final artifactName = block.fileName ?? block.language ?? 'Artifact';
     final artifactType = block.language ?? 'file';
 
     IconData typeIcon;
@@ -35,25 +35,23 @@ class ArtifactBlockView extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Container(
         padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          color: colorScheme.primaryContainer.withOpacity(0.15),
-          border: Border.all(
-            color: colorScheme.primary.withOpacity(0.2),
-          ),
+        decoration: const BoxDecoration(
+          borderRadius: BorderRadius.all(Radius.circular(10)),
+          color: Color(0x0FFBBF24),
+          border: Border.fromBorderSide(BorderSide(color: Color(0x40FBBF24))),
         ),
         child: Row(
           children: [
             Container(
               width: 36,
               height: 36,
-              decoration: BoxDecoration(
-                color: colorScheme.primary.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(8),
+              decoration: const BoxDecoration(
+                color: Color(0x1AFBBF24),
+                borderRadius: BorderRadius.all(Radius.circular(8)),
               ),
               child: Center(
                 child: Icon(typeIcon,
-                    size: 20, color: colorScheme.primary),
+                    size: 20, color: const Color(0xFFFBBF24)),
               ),
             ),
             const SizedBox(width: 10),
@@ -62,15 +60,15 @@ class ArtifactBlockView extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(artifactName,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: colorScheme.onSurface,
+                        color: Color(0xFFE4E4E7),
                       )),
                   Text(artifactType,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 11,
-                        color: colorScheme.onSurface.withOpacity(0.4),
+                        color: Color(0xFF71717A),
                       )),
                 ],
               ),

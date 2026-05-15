@@ -23,3 +23,13 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
 	void bridge.stop().finally(() => process.exit(0));
 });
+
+// Prevent crash from unhandled rejections (e.g. CDP disconnect during retry)
+process.on('unhandledRejection', (reason) => {
+	console.error('[CopilotMirror] Unhandled rejection:', reason);
+});
+
+// Prevent crash from uncaught synchronous exceptions
+process.on('uncaughtException', (error) => {
+	console.error('[CopilotMirror] Uncaught exception:', error);
+});

@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& '.github\\hooks\\play-completion-audio.ps1'\"",
+        "timeout": 30,
+        "cwd": "d:\\programme\\LBol_demoplugin"
+      }
+    ]
+  }
+}

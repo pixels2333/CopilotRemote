@@ -9,11 +9,17 @@ export interface ScoredTarget {
 	title: string;
 	score: number;
 	type: string;
+	webSocketDebuggerUrl?: string;
 }
 
 /**
  * Score a CDP target for likelihood of being the Copilot Chat webview.
  * Higher = more likely.
+ *
+ * Key heuristics:
+ * - vscode-file:// pages are the actual VS Code workbench (strong positive signal)
+ * - localhost/127.0.0.1 pages are likely our own Flutter web app, not the real Copilot Chat
+ * - "Copilot Mirror" in the title means it's our Flutter app title, not VS Code Copilot
  */
 export function scoreTarget(url: string, title: string, type: string): number {
 	const lowerUrl = url.toLowerCase();
@@ -21,26 +27,46 @@ export function scoreTarget(url: string, title: string, type: string): number {
 
 	let score = 0;
 
-	// URL signals
-	if (lowerUrl.includes('github') && lowerUrl.includes('copilot')) {
-		score += 100;
-	}
-	if (lowerUrl.includes('copilot')) {
-		score += 80;
-	}
-	if (lowerUrl.includes('webview') || lowerUrl.includes('vscode-webview')) {
-		score += 20;
+	// Strong signal: vscode-file:// means this IS the VS Code workbench
+	const isVscodeFile = lowerUrl.startsWith('vscode-file://');
+	if (isVscodeFile) {
+		score += 50;
 	}
 
-	// Title signals
-	if (lowerTitle.includes('copilot')) {
-		score += 80;
+	// Penalize pages that are just serving our Flutter web app
+	// "Copilot Mirror" is the Flutter app's title — not the real Copilot Chat
+	const isMirrorAppPage = lowerTitle.includes('copilot mirror') || lowerTitle === 'copilot_mirror';
+	if (isMirrorAppPage) {
+		score -= 40;
 	}
-	if (lowerTitle.includes('chat')) {
-		score += 20;
+
+	// localhost/127.0.0.1 pages are served content (Flutter app), not VS Code internals
+	const isLocalhost = lowerUrl.includes('localhost') || lowerUrl.includes('127.0.0.1');
+
+	// URL signals (only meaningful for non-localhost, non-mirror pages)
+	if (!isLocalhost) {
+		if (lowerUrl.includes('github') && lowerUrl.includes('copilot')) {
+			score += 100;
+		}
+		if (lowerUrl.includes('copilot')) {
+			score += 80;
+		}
+		if (lowerUrl.includes('webview') || lowerUrl.includes('vscode-webview')) {
+			score += 20;
+		}
 	}
-	if (lowerTitle.includes('visual studio code')) {
-		score += 5;
+
+	// Title signals (skip for pages that are our own Flutter app)
+	if (!isMirrorAppPage) {
+		if (lowerTitle.includes('copilot') && !isLocalhost) {
+			score += 80;
+		}
+		if (lowerTitle.includes('chat') && !isLocalhost) {
+			score += 20;
+		}
+		if (lowerTitle.includes('visual studio code')) {
+			score += 5;
+		}
 	}
 
 	// Type signal: prefer page or webview
@@ -71,6 +97,7 @@ export async function listTargets(host: string, port: number): Promise<ScoredTar
 		url?: string;
 		title?: string;
 		type?: string;
+		webSocketDebuggerUrl?: string;
 	}>;
 
 	return list.map(t => ({
@@ -78,6 +105,7 @@ export async function listTargets(host: string, port: number): Promise<ScoredTar
 		url: t.url ?? '',
 		title: t.title ?? '',
 		type: t.type ?? '',
+		webSocketDebuggerUrl: t.webSocketDebuggerUrl,
 		score: scoreTarget(t.url ?? '', t.title ?? '', t.type ?? '')
 	}));
 }
@@ -121,11 +149,17 @@ export async function probeForCopilot(
 				);
 				const textareas = document.querySelectorAll('textarea');
 				const roleTextboxes = document.querySelectorAll('[role="textbox"]');
+				const sessionViewer = document.querySelector('[class*="agent-sessions-viewer"]');
+				const chatTitle = document.querySelector('[class*="chat-view-title-label-container"], [class*="chat-title"]');
+				const interactiveList = document.querySelector('[class*="interactive-list"], .interactive-session');
 				return {
 					hasChatRoot: !!root,
 					hasTextarea: textareas.length > 0,
 					hasRoleTextbox: roleTextboxes.length > 0,
 					hasCopilotInClass: !!(document.body.className || '').toLowerCase().includes('copilot'),
+					hasSessionViewer: !!sessionViewer,
+					hasChatTitle: !!chatTitle,
+					hasInteractiveList: !!interactiveList,
 					fullText: (document.body.innerText || '').slice(0, 200)
 				};
 			})()
@@ -134,6 +168,9 @@ export async function probeForCopilot(
 			hasTextarea: boolean;
 			hasRoleTextbox: boolean;
 			hasCopilotInClass: boolean;
+			hasSessionViewer: boolean;
+			hasChatTitle: boolean;
+			hasInteractiveList: boolean;
 			fullText: string;
 		};
 
@@ -144,6 +181,9 @@ export async function probeForCopilot(
 		if (result.hasTextarea) { score += 20; signals.push('textarea'); }
 		if (result.hasRoleTextbox) { score += 15; signals.push('role_textbox'); }
 		if (result.hasCopilotInClass) { score += 30; signals.push('copilot_class'); }
+		if (result.hasSessionViewer) { score += 45; signals.push('session_viewer'); }
+		if (result.hasChatTitle) { score += 35; signals.push('chat_title'); }
+		if (result.hasInteractiveList) { score += 20; signals.push('interactive_list'); }
 		if (result.fullText.toLowerCase().includes('copilot')) { score += 40; signals.push('copilot_text'); }
 		if (result.fullText.toLowerCase().includes('chat')) { score += 10; signals.push('chat_text'); }
 

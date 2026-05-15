@@ -9,6 +9,9 @@ class MirrorBlock {
   String visibleContent;
   String? language;
   String? fileName;
+  String? toolName;
+  String? displayName;
+  String? summary;
   ToolState? toolState;
   String? artifactId;
   Map<String, dynamic>? metadata;
@@ -21,6 +24,9 @@ class MirrorBlock {
     this.visibleContent = '',
     this.language,
     this.fileName,
+    this.toolName,
+    this.displayName,
+    this.summary,
     this.toolState,
     this.artifactId,
     this.metadata,
@@ -36,8 +42,11 @@ class MirrorBlock {
       visibleContent: json['content'] as String? ?? '',
       language: json['language'] as String?,
       fileName: json['fileName'] as String?,
-      toolState: json['toolState'] != null
-          ? ToolState.fromJson(json['toolState'] as String)
+        toolName: json['toolName'] as String?,
+        displayName: json['displayName'] as String?,
+        summary: json['summary'] as String?,
+        toolState: (json['toolState'] ?? json['state']) != null
+          ? ToolState.fromJson((json['toolState'] ?? json['state']) as String)
           : null,
       artifactId: json['artifactId'] as String?,
       metadata: json['metadata'] as Map<String, dynamic>?,
@@ -52,6 +61,9 @@ class MirrorBlock {
     String? visibleContent,
     String? language,
     String? fileName,
+    String? toolName,
+    String? displayName,
+    String? summary,
     ToolState? toolState,
     String? artifactId,
     Map<String, dynamic>? metadata,
@@ -64,6 +76,9 @@ class MirrorBlock {
       visibleContent: visibleContent ?? this.visibleContent,
       language: language ?? this.language,
       fileName: fileName ?? this.fileName,
+      toolName: toolName ?? this.toolName,
+      displayName: displayName ?? this.displayName,
+      summary: summary ?? this.summary,
       toolState: toolState ?? this.toolState,
       artifactId: artifactId ?? this.artifactId,
       metadata: metadata ?? this.metadata,

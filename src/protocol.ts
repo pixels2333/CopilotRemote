@@ -378,15 +378,9 @@ export interface BridgeDomEvent {
 	patch?: Partial<MirrorBlock>;
 	status?: MirrorStatus;
 	finalLength?: number;
-	error?: string;
-	/** Session list payload */
-	sessions?: MirrorChatSessionItem[];
-	activeSessionId?: string;
-	/** Slash command list payload */
-	slashCommands?: MirrorSlashCommandItem[];
-	/** Agent list payload */
-	agents?: MirrorAgentItem[];
-	activeAgentId?: string;
+	/** Session list data from DOM observer */
+	sessions?: Array<{ title: string; index: number; active: boolean; _domIndex: number }>;
+	activeTitle?: string;
 }
 
 // ─── Bridge Configuration ────────────────────────────────────────

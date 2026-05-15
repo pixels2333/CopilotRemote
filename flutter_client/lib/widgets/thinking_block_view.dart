@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/message.dart';
+import '../models/types.dart';
 
 class ThinkingBlockView extends StatefulWidget {
   final MirrorBlock block;

@@ -9,7 +9,6 @@ class ConnectionStatusBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(chatProvider.select((s) => s.connectionStatus));
-    final colorScheme = Theme.of(context).colorScheme;
 
     Color bgColor;
     Color fgColor;
@@ -18,30 +17,30 @@ class ConnectionStatusBar extends ConsumerWidget {
 
     switch (status) {
       case ConnectionStatus.connected:
-        bgColor = Colors.green.shade900;
-        fgColor = Colors.green.shade200;
+        bgColor = const Color(0xFF166534);
+        fgColor = const Color(0xFF4ADE80);
         icon = Icons.cloud_done_rounded;
-        text = 'Connected';
+        text = '已连接';
       case ConnectionStatus.connecting:
-        bgColor = Colors.orange.shade900;
-        fgColor = Colors.orange.shade200;
+        bgColor = const Color(0xFF9A3412);
+        fgColor = const Color(0xFFFBBF24);
         icon = Icons.cloud_upload_rounded;
-        text = 'Connecting…';
+        text = '连接中…';
       case ConnectionStatus.reconnecting:
-        bgColor = Colors.orange.shade900;
-        fgColor = Colors.orange.shade200;
+        bgColor = const Color(0xFF9A3412);
+        fgColor = const Color(0xFFFBBF24);
         icon = Icons.cloud_sync_rounded;
-        text = 'Reconnecting…';
+        text = '重连中…';
       case ConnectionStatus.disconnected:
-        bgColor = colorScheme.surfaceContainerHighest;
-        fgColor = colorScheme.onSurface.withOpacity(0.6);
+        bgColor = const Color(0xFF374151);
+        fgColor = const Color(0xFFA1A1AA);
         icon = Icons.cloud_off_rounded;
-        text = 'Disconnected';
+        text = '已断开';
       case ConnectionStatus.failed:
-        bgColor = Colors.red.shade900;
-        fgColor = Colors.red.shade200;
+        bgColor = const Color(0xFF991B1B);
+        fgColor = const Color(0xFFFCA5A5);
         icon = Icons.error_outline_rounded;
-        text = 'Connection Failed';
+        text = '连接失败';
     }
 
     return Container(

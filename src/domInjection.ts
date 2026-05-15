@@ -26,7 +26,7 @@ import type { BridgeOptions } from './protocol.js';
  */
 export function buildObserverScript(options: BridgeOptions): string {
 	return `
-(() => {
+(async () => {
 	if (window.__copilotMirrorInstalled) { return { ok: true, reason: 'already_installed' }; }
 
 	const SESSION_ID = ${JSON.stringify(options.sessionId)};
@@ -47,12 +47,32 @@ export function buildObserverScript(options: BridgeOptions): string {
 	}
 	function stableId(p, v) { return p + '_' + hash(v); }
 	function textOf(n) { return (n.textContent || n.innerText || '').replace(/\\u00a0/g, ' ').trim(); }
+	function cloneTextWithout(node, selectors) {
+		if (!node) return '';
+		const clone = node.cloneNode(true);
+		for (const selector of selectors) {
+			for (const child of Array.from(clone.querySelectorAll(selector))) child.remove();
+		}
+		return textOf(clone);
+	}
 
 	/* ── Find chat panel root ── */
 	function findList() {
 		const aux = document.getElementById('workbench.parts.auxiliarybar');
 		if (!aux) return null;
-		return aux.querySelector('.monaco-list');
+
+		// Prefer the actual chat message list, not the agent sessions sidebar list.
+		const preferred = aux.querySelector('.interactive-list .monaco-list, .chat-list-at-bottom .monaco-list, [class*="interactive-list"] .monaco-list');
+		if (preferred) return preferred;
+
+		const lists = Array.from(aux.querySelectorAll('.monaco-list'));
+		return lists.find(list => {
+			const inInteractiveList = list.closest('.interactive-list, [class*="interactive-list"], .chat-list-at-bottom');
+			if (inInteractiveList) return true;
+
+			const rows = Array.from(list.querySelectorAll('.monaco-list-row'));
+			return rows.some(row => /request|response/.test((row.className || '').toLowerCase()));
+		}) || null;
 	}
 
 	/* ── Broader fallback: scan for any visible text containers ── */
@@ -71,6 +91,64 @@ export function buildObserverScript(options: BridgeOptions): string {
 	}
 
 	function rowRole(r) { return (r.className || '').toLowerCase().includes('request') ? 'user' : 'assistant'; }
+
+	function extractThinkingParts(el) {
+		const body = el.querySelector('.chat-used-context-list') || el;
+		return Array.from(body.querySelectorAll('.chat-thinking-item.markdown-content'))
+			.filter(item => !item.closest('.chat-thinking-tool-wrapper'))
+			.map(item => textOf(item))
+			.filter(text => text && text !== '思考' && text.toLowerCase() !== 'thinking');
+	}
+
+	function extractThinkingText(el) {
+		const parts = extractThinkingParts(el);
+		const text = parts.join(String.fromCharCode(10) + String.fromCharCode(10)).trim();
+		return text;
+	}
+
+	function normalizeWords(text) {
+		return (' ' + text.toLowerCase().replace(/[^a-z\u4e00-\u9fff]+/g, ' ').trim() + ' ');
+	}
+
+	function containsWord(text, needles) {
+		const normalized = normalizeWords(text);
+		return needles.some(needle => normalized.includes(' ' + needle + ' '));
+	}
+
+	function inferToolName(iconClass, displayName, summary) {
+		const text = (iconClass + ' ' + displayName + ' ' + summary).toLowerCase();
+		if (iconClass.includes('codicon-terminal') || containsWord(text, ['run', 'running', 'execute', 'executed', 'command', 'terminal', 'build', 'open', 'switch', '执行', '运行'])) return 'run';
+		if (iconClass.includes('codicon-search') || containsWord(text, ['search', 'searched', 'find', 'found', 'grep', 'scan', 'scanned', 'lookup', '搜索', '查找'])) return 'search';
+		if (/codicon-(checklist|files|file|book|list-tree)/.test(iconClass) || containsWord(text, ['review', 'reviewed', 'read', 'checked', 'check', 'inspect', 'inspected', '读取', '检查', '审查'])) return 'read';
+		if (/codicon-(edit|pencil|save)/.test(iconClass) || containsWord(text, ['edit', 'edited', 'write', 'wrote', 'apply', 'applied', 'patch', 'patched', 'create', 'created', '编辑', '修改', '创建'])) return 'edit';
+		return 'tool';
+	}
+
+	function extractToolDescriptor(el) {
+		const iconClass = el.querySelector('.chat-thinking-icon')?.className || '';
+		const invocation = el.querySelector('.chat-tool-invocation-part') || el;
+		const labelNode = invocation.querySelector('.chat-used-context-label [aria-label], .chat-used-context-label .monaco-button-label, .chat-used-context-label .monaco-button-mdlabel, .chat-used-context-label, [aria-label]');
+		const ariaLabel = labelNode instanceof Element ? (labelNode.getAttribute('aria-label') || '').trim() : '';
+		const labelText = labelNode ? textOf(labelNode) : '';
+		const displayName = ariaLabel || labelText || cloneTextWithout(invocation, ['.chat-thinking-icon', '.codicon', 'svg']) || cloneTextWithout(el, ['.chat-thinking-icon', '.codicon', 'svg']) || 'Tool';
+		const summary = cloneTextWithout(invocation, ['.chat-used-context-label', '.chat-thinking-icon', '.codicon', 'svg', 'style', 'script', '.xterm', '.xterm-viewport', '.xterm-screen', '.xterm-helpers', '.xterm-decoration-container', '.xterm-accessibility']) || cloneTextWithout(el, ['.chat-used-context-label', '.chat-thinking-icon', '.codicon', 'svg', 'style', 'script', '.xterm', '.xterm-viewport', '.xterm-screen', '.xterm-helpers', '.xterm-decoration-container', '.xterm-accessibility']) || displayName;
+		if ((!summary || summary === 'Tool') && (!displayName || displayName === 'Tool')) return null;
+		const toolName = inferToolName(iconClass, displayName, summary);
+		const state = /failed|error|错误|失败/.test((displayName + ' ' + summary).toLowerCase())
+			? 'failed'
+			: (/running|正在运行|processing|正在处理|loading|加载/.test((displayName + ' ' + summary).toLowerCase()) ? 'running' : 'succeeded');
+		return { toolName, displayName, summary, state };
+	}
+
+	function classifyActionSummary(title, content) {
+		const normalized = (title + ' ' + content).toLowerCase().trim();
+		if (!normalized || normalized.length > 240) return null;
+		if (containsWord(normalized, ['search', 'searched', 'searching', 'find', 'found', 'grep', 'scan', 'scanned', 'scanning'])) return 'search';
+		if (containsWord(normalized, ['review', 'reviewed', 'reviewing', 'read', 'reads', 'reading', 'check', 'checked', 'checking', 'inspect', 'inspected', 'inspecting'])) return 'read';
+		if (containsWord(normalized, ['execute', 'executed', 'executing', 'run', 'runs', 'running', 'ran', 'build', 'built', 'building', 'open', 'opened', 'opening', 'switch', 'switched', 'switching'])) return 'run';
+		if (containsWord(normalized, ['create', 'created', 'creating', 'edit', 'edited', 'editing', 'write', 'wrote', 'writing', 'apply', 'applied', 'applying', 'patch', 'patched', 'patching'])) return 'edit';
+		return null;
+	}
 
 	/* ── Extract blocks from a response row ── */
 	function extractBlocks(row, msgId) {
@@ -95,21 +173,20 @@ export function buildObserverScript(options: BridgeOptions): string {
 
 		// Thinking
 		for (const el of Array.from(contents.querySelectorAll('.chat-used-context.chat-thinking-box'))) {
-			const body = el.querySelector('.chat-used-context-list') || el;
 			const title = el.querySelector('.chat-thinking-title-detail-text');
-			const c = textOf(body);
-			if (c) { blocks.push({ id: stableId('th_', msgId + c.slice(0,32)), type: 'thinking', status: 'completed', format: 'plain', content: c, visibility: 'collapsed', title: title ? textOf(title) : 'Thinking' }); specializedCount++; }
+			const titleText = title ? textOf(title) : '';
+			const c = extractThinkingText(el);
+			if (c) { blocks.push({ id: stableId('th_', msgId + c.slice(0,32)), type: 'thinking', status: 'completed', format: 'plain', content: c, visibility: 'collapsed', title: titleText || 'Thinking' }); specializedCount++; }
 		}
 
 		// Tool wrappers
 		for (const el of Array.from(contents.querySelectorAll('.chat-thinking-tool-wrapper'))) {
-			const c = textOf(el);
-			if (c) {
-				const name = c.split('\\n')[0] || 'Tool';
+			const tool = extractToolDescriptor(el);
+			if (tool && (tool.summary || tool.displayName)) {
 				blocks.push({
-					id: stableId('tl_', msgId + c.slice(0,32)), type: 'tool_call', status: 'completed',
-					toolCallId: stableId('tc_', c.slice(0,64)), toolName: name.split(' ')[0],
-					displayName: name, state: c.toLowerCase().includes('failed') ? 'failed' : 'succeeded', summary: c
+					id: stableId('tl_', msgId + tool.summary.slice(0,32)), type: 'tool_call', status: 'completed',
+					toolCallId: stableId('tc_', tool.displayName.slice(0,64)), toolName: tool.toolName,
+					displayName: tool.displayName, state: tool.state, summary: tool.summary
 				});
 				specializedCount++;
 			}
@@ -117,6 +194,7 @@ export function buildObserverScript(options: BridgeOptions): string {
 
 		// Markdown content (text + code)
 		for (const el of Array.from(contents.querySelectorAll('.chat-markdown-part.rendered-markdown, .rendered-markdown'))) {
+			if (el.closest('.chat-used-context.chat-thinking-box, .chat-thinking-tool-wrapper')) continue;
 			const c = textOf(el); if (!c) continue;
 			const isCode = el.classList.contains('progress-step');
 			const type = isCode ? 'code_block' : 'text';
@@ -135,9 +213,10 @@ export function buildObserverScript(options: BridgeOptions): string {
 			}
 		}
 
-		// Fallback
+		// Fallback: try contents text, then row text
 		if (blocks.length === 0) {
-			const t = textOf(contents); if (t) blocks.push({ id: stableId('tx_', t.slice(0,64)), type: 'text', status: 'completed', format: 'markdown', content: t });
+			const t = textOf(contents) || textOf(row);
+			if (t) blocks.push({ id: stableId('tx_', t.slice(0,64)), type: 'text', status: 'completed', format: 'markdown', content: t, _fallback: true });
 		}
 		return blocks;
 	}
@@ -151,23 +230,27 @@ export function buildObserverScript(options: BridgeOptions): string {
 				return rows.map((row, i) => {
 					const role = rowRole(row);
 					const t = textOf(row);
-					const mid = stableId('msg_' + role, i + ':' + role + ':' + t.slice(0,80));
+					const mid = stableId('msg_' + role, i + ':' + role);
 					const now = new Date().toISOString();
 					return { id: mid, role, status: 'completed', createdAt: now, updatedAt: now, blocks: extractBlocks(row, mid), metadata: { domIndex: i } };
 				});
 			}
 		}
 
-		// 🔻 Broader fallback: no monaco-list found, use findFallbackRows
-		if (!window.__copilotMirrorState.fineMode) {
-			const fallbackRows = findFallbackRows();
-			if (fallbackRows.length > 0) {
-				return fallbackRows.map((row, i) => {
-					const t = textOf(row);
-					const mid = stableId('msg_fb_', i + ':' + t.slice(0,80));
-					const now = new Date().toISOString();
-					return { id: mid, role: 'assistant', status: 'completed', createdAt: now, updatedAt: now, blocks: [{ id: stableId('tx_', t.slice(0,64)), type: 'text', status: 'completed', format: 'markdown', content: t, _fallback: true }], metadata: { domIndex: i, _fallback: true } };
-				});
+		// Broader fallback: scan for visible text containers
+		{
+			const aux = document.getElementById('workbench.parts.auxiliarybar');
+			if (aux) {
+				const containers = aux.querySelectorAll('.monaco-tl-contents, .pane-body > div > div, [class*="content"] > div > div');
+				const fallbackRows = Array.from(containers).filter(el => el instanceof HTMLElement && textOf(el).length > 20 && el.children.length > 0).slice(-20);
+				if (fallbackRows.length > 0) {
+					return fallbackRows.map((row, i) => {
+						const t = textOf(row);
+						const mid = stableId('msg_fb_', i + '');
+						const now = new Date().toISOString();
+						return { id: mid, role: 'assistant', status: 'completed', createdAt: now, updatedAt: now, blocks: [{ id: stableId('tx_', t.slice(0,64)), type: 'text', status: 'completed', format: 'markdown', content: t, _fallback: true }], metadata: { domIndex: i, _fallback: true } };
+					});
+				}
 			}
 		}
 
@@ -178,8 +261,12 @@ export function buildObserverScript(options: BridgeOptions): string {
 	function flushSnapshot() {
 		const messages = extractAll();
 		emit({ kind: 'snapshot', messages });
-		for (const m of messages) for (const b of m.blocks) {
-			if (typeof b.content === 'string') window.__copilotMirrorState.blockContent.set(b.id, b.content);
+		const fingerprints = window.__copilotMirrorState.messageFingerprints;
+		for (const m of messages) {
+			for (const b of m.blocks) {
+				if (typeof b.content === 'string') window.__copilotMirrorState.blockContent.set(b.id, b.content);
+			}
+			if (!fingerprints.has(m.id)) fingerprints.set(m.id, true);
 		}
 	}
 
@@ -189,7 +276,16 @@ export function buildObserverScript(options: BridgeOptions): string {
 		const known = window.__copilotMirrorState.messageFingerprints;
 
 		for (const m of messages) {
-			if (!known.has(m.id)) { known.set(m.id, true); emit({ kind: 'message', message: { ...m, blocks: [] } }); }
+			const isNew = !known.has(m.id);
+			if (isNew) {
+				known.set(m.id, true);
+				emit({ kind: 'message', message: { ...m, blocks: m.blocks } });
+				for (const b of m.blocks) {
+					if (typeof b.content === 'string' && b.content) {
+						window.__copilotMirrorState.blockContent.set(b.id, b.content);
+					}
+				}
+			}
 			for (const b of m.blocks) {
 				const prev = window.__copilotMirrorState.blockContent.get(b.id);
 				const cur = b.content || '';
@@ -207,27 +303,295 @@ export function buildObserverScript(options: BridgeOptions): string {
 		}
 	}
 
-	/* ── Init ── */
-	const list = findList();
+/* ── Merge incremental assistant messages (same-role prefix dedup) ── */
+	function mergeIncrementalMessages(messages) {
+		const result = [];
+		for (const msg of messages) {
+			if (result.length > 0) {
+				const prev = result[result.length - 1];
+				if (prev.role === msg.role) {
+					const prevText = prev.blocks.map(b => (typeof b.content === 'string' ? b.content : '')).join('');
+					const curText = msg.blocks.map(b => (typeof b.content === 'string' ? b.content : '')).join('');
+					if (prevText.length > 0 && curText.startsWith(prevText)) {
+						// Current message is an extension of previous; replace prev with cur
+						result[result.length - 1] = { ...prev, blocks: msg.blocks };
+						continue;
+					}
+				}
+			}
+			result.push(msg);
+		}
+		return result;
+	}
+
+/* ── Init (async with DOM retry) ── */
+	async function waitForList(retries = 15, delayMs = 400) {
+		for (let i = 0; i < retries; i++) {
+			const list = findList();
+			if (list) return list;
+			await new Promise(r => setTimeout(r, delayMs));
+		}
+		return null;
+	}
+
+	const list = await waitForList();
 	if (!list) return { ok: false, reason: 'monaco_list_not_found' };
-	flushSnapshot();
 
-	let scheduled = false;
-	const schedule = () => {
-		if (scheduled) return;
-		scheduled = true;
-		requestAnimationFrame(() => { scheduled = false; flushDelta(); });
-	};
+	// Emit full snapshot (used by both initial connect and polling)
+	function emitSnapshot() {
+		const messages = mergeIncrementalMessages(extractAll());
+		emit({ kind: 'snapshot', messages });
+		const fingerprints = window.__copilotMirrorState.messageFingerprints;
+		for (const m of messages) {
+			for (const b of m.blocks) {
+				if (typeof b.content === 'string') window.__copilotMirrorState.blockContent.set(b.id, b.content);
+			}
+			if (!fingerprints.has(m.id)) fingerprints.set(m.id, true);
+		}
+	}
 
-	const obsTarget = list.closest('.auxiliarybar') || document.getElementById('workbench.parts.auxiliarybar') || list;
-	const observer = new MutationObserver(schedule);
-	observer.observe(obsTarget, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['class', 'style'] });
+	emitSnapshot();
 
-	setInterval(() => { flushDelta(); emit({ kind: 'heartbeat' }); }, ${options.heartbeatMs});
+	// Poll every 300ms (reliable, no rAF throttling issues in background panels)
+	setInterval(() => { emitSnapshot(); }, 300);
 
 	return { ok: true };
 })();
 	`.trim();
+}
+
+/**
+ * Build a one-shot snapshot script that extracts the currently visible chat
+ * messages directly from the DOM. Unlike the long-lived observer, this does
+ * not rely on any previously injected page state, so it is safe to use after
+ * bridge restarts or when the old observer selected the wrong list.
+ */
+export function buildCurrentSnapshotScript(): string {
+	return `(() => {
+		try {
+			function hash(value) {
+				let h = 0;
+				for (let i = 0; i < value.length; i++) { h = ((h << 5) - h) + value.charCodeAt(i); h |= 0; }
+				return Math.abs(h).toString(36);
+			}
+			function stableId(prefix, value) { return prefix + '_' + hash(value); }
+			function textOf(node) { return (node?.textContent || node?.innerText || '').replace(/\u00a0/g, ' ').trim(); }
+			function cloneTextWithout(node, selectors) {
+				if (!node) return '';
+				const clone = node.cloneNode(true);
+				for (const selector of selectors) {
+					for (const child of Array.from(clone.querySelectorAll(selector))) child.remove();
+				}
+				return textOf(clone);
+			}
+
+			function findList() {
+				const aux = document.getElementById('workbench.parts.auxiliarybar');
+				if (!aux) return null;
+
+				const preferred = aux.querySelector('.interactive-list .monaco-list, .chat-list-at-bottom .monaco-list, [class*="interactive-list"] .monaco-list');
+				if (preferred) return preferred;
+
+				const lists = Array.from(aux.querySelectorAll('.monaco-list'));
+				return lists.find(list => {
+					const inInteractiveList = list.closest('.interactive-list, [class*="interactive-list"], .chat-list-at-bottom');
+					if (inInteractiveList) return true;
+
+					const rows = Array.from(list.querySelectorAll('.monaco-list-row'));
+					return rows.some(row => /request|response/.test((row.className || '').toLowerCase()));
+				}) || null;
+			}
+
+			function getRows(list) {
+				return Array.from(list.querySelectorAll('.monaco-list-row')).filter(row => row instanceof HTMLElement);
+			}
+
+			function rowRole(row) {
+				return (row.className || '').toLowerCase().includes('request') ? 'user' : 'assistant';
+			}
+
+			function extractThinkingParts(el) {
+				const body = el.querySelector('.chat-used-context-list') || el;
+				return Array.from(body.querySelectorAll('.chat-thinking-item.markdown-content'))
+					.filter(item => !item.closest('.chat-thinking-tool-wrapper'))
+					.map(item => textOf(item))
+					.filter(text => text && text !== '思考' && text.toLowerCase() !== 'thinking');
+			}
+
+			function extractThinkingText(el) {
+				const parts = extractThinkingParts(el);
+				const text = parts.join(String.fromCharCode(10) + String.fromCharCode(10)).trim();
+				return text;
+			}
+
+			function normalizeWords(text) {
+				return (' ' + text.toLowerCase().replace(/[^a-z\u4e00-\u9fff]+/g, ' ').trim() + ' ');
+			}
+
+			function containsWord(text, needles) {
+				const normalized = normalizeWords(text);
+				return needles.some(needle => normalized.includes(' ' + needle + ' '));
+			}
+
+			function inferToolName(iconClass, displayName, summary) {
+				const text = (iconClass + ' ' + displayName + ' ' + summary).toLowerCase();
+				if (iconClass.includes('codicon-terminal') || containsWord(text, ['run', 'running', 'execute', 'executed', 'command', 'terminal', 'build', 'open', 'switch', '执行', '运行'])) return 'run';
+				if (iconClass.includes('codicon-search') || containsWord(text, ['search', 'searched', 'find', 'found', 'grep', 'scan', 'scanned', 'lookup', '搜索', '查找'])) return 'search';
+				if (/codicon-(checklist|files|file|book|list-tree)/.test(iconClass) || containsWord(text, ['review', 'reviewed', 'read', 'checked', 'check', 'inspect', 'inspected', '读取', '检查', '审查'])) return 'read';
+				if (/codicon-(edit|pencil|save)/.test(iconClass) || containsWord(text, ['edit', 'edited', 'write', 'wrote', 'apply', 'applied', 'patch', 'patched', 'create', 'created', '编辑', '修改', '创建'])) return 'edit';
+				return 'tool';
+			}
+
+			function extractToolDescriptor(el) {
+				const iconClass = el.querySelector('.chat-thinking-icon')?.className || '';
+				const invocation = el.querySelector('.chat-tool-invocation-part') || el;
+				const labelNode = invocation.querySelector('.chat-used-context-label [aria-label], .chat-used-context-label .monaco-button-label, .chat-used-context-label .monaco-button-mdlabel, .chat-used-context-label, [aria-label]');
+				const ariaLabel = labelNode instanceof Element ? (labelNode.getAttribute('aria-label') || '').trim() : '';
+				const labelText = labelNode ? textOf(labelNode) : '';
+				const displayName = ariaLabel || labelText || cloneTextWithout(invocation, ['.chat-thinking-icon', '.codicon', 'svg']) || cloneTextWithout(el, ['.chat-thinking-icon', '.codicon', 'svg']) || 'Tool';
+				const summary = cloneTextWithout(invocation, ['.chat-used-context-label', '.chat-thinking-icon', '.codicon', 'svg', 'style', 'script', '.xterm', '.xterm-viewport', '.xterm-screen', '.xterm-helpers', '.xterm-decoration-container', '.xterm-accessibility']) || cloneTextWithout(el, ['.chat-used-context-label', '.chat-thinking-icon', '.codicon', 'svg', 'style', 'script', '.xterm', '.xterm-viewport', '.xterm-screen', '.xterm-helpers', '.xterm-decoration-container', '.xterm-accessibility']) || displayName;
+				if ((!summary || summary === 'Tool') && (!displayName || displayName === 'Tool')) return null;
+				const toolName = inferToolName(iconClass, displayName, summary);
+				const state = /failed|error|错误|失败/.test((displayName + ' ' + summary).toLowerCase())
+					? 'failed'
+					: (/running|正在运行|processing|正在处理|loading|加载/.test((displayName + ' ' + summary).toLowerCase()) ? 'running' : 'succeeded');
+				return { toolName, displayName, summary, state };
+			}
+
+			function classifyActionSummary(title, content) {
+				const normalized = (title + ' ' + content).toLowerCase().trim();
+				if (!normalized || normalized.length > 240) return null;
+				if (containsWord(normalized, ['search', 'searched', 'searching', 'find', 'found', 'grep', 'scan', 'scanned', 'scanning'])) return 'search';
+				if (containsWord(normalized, ['review', 'reviewed', 'reviewing', 'read', 'reads', 'reading', 'check', 'checked', 'checking', 'inspect', 'inspected', 'inspecting'])) return 'read';
+				if (containsWord(normalized, ['execute', 'executed', 'executing', 'run', 'runs', 'running', 'ran', 'build', 'built', 'building', 'open', 'opened', 'opening', 'switch', 'switched', 'switching'])) return 'run';
+				if (containsWord(normalized, ['create', 'created', 'creating', 'edit', 'edited', 'editing', 'write', 'wrote', 'writing', 'apply', 'applied', 'applying', 'patch', 'patched', 'patching'])) return 'edit';
+				return null;
+			}
+
+			function extractBlocks(row, messageId) {
+				const blocks = [];
+				const hasFineSelectors = row.querySelector('.chat-markdown-part, .chat-used-context, .rendered-markdown, .chat-thinking');
+				const contents = hasFineSelectors ? row.querySelector('.monaco-tl-contents') : row;
+
+				if (!contents && !hasFineSelectors) {
+					const text = textOf(row);
+					if (text) {
+						blocks.push({ id: stableId('tx_', text.slice(0, 64)), type: 'text', status: 'completed', format: 'markdown', content: text });
+					}
+					return blocks;
+				}
+
+				if (!contents) {
+					const text = textOf(row);
+					if (text) {
+						blocks.push({ id: stableId('tx_', text.slice(0, 64)), type: 'text', status: 'completed', format: 'markdown', content: text });
+					}
+					return blocks;
+				}
+
+				for (const el of Array.from(contents.querySelectorAll('.chat-used-context.chat-thinking-box'))) {
+					const title = el.querySelector('.chat-thinking-title-detail-text');
+					const titleText = title ? textOf(title) : '';
+					const content = extractThinkingText(el);
+					if (content) {
+						blocks.push({
+							id: stableId('th_', messageId + content.slice(0, 32)),
+							type: 'thinking',
+							status: 'completed',
+							format: 'plain',
+							content,
+							visibility: 'collapsed',
+							title: titleText || 'Thinking'
+						});
+					}
+				}
+
+				for (const el of Array.from(contents.querySelectorAll('.chat-thinking-tool-wrapper'))) {
+					const tool = extractToolDescriptor(el);
+					if (tool && (tool.summary || tool.displayName)) {
+						blocks.push({
+							id: stableId('tl_', messageId + tool.summary.slice(0, 32)),
+							type: 'tool_call',
+							status: 'completed',
+							toolCallId: stableId('tc_', tool.displayName.slice(0, 64)),
+							toolName: tool.toolName,
+							displayName: tool.displayName,
+							state: tool.state,
+							summary: tool.summary
+						});
+					}
+				}
+
+				for (const el of Array.from(contents.querySelectorAll('.chat-markdown-part.rendered-markdown, .rendered-markdown'))) {
+					if (el.closest('.chat-used-context.chat-thinking-box, .chat-thinking-tool-wrapper')) continue;
+					const content = textOf(el);
+					if (!content) continue;
+					const isCode = el.classList.contains('progress-step');
+					blocks.push({
+						id: stableId(isCode ? 'cd_' : 'tx_', messageId + content.slice(0, 48)),
+						type: isCode ? 'code_block' : 'text',
+						status: 'completed',
+						format: isCode ? 'plain' : 'markdown',
+						content,
+						...(isCode ? { language: 'plaintext' } : {})
+					});
+				}
+
+				if (blocks.length === 0) {
+					const text = textOf(contents);
+					if (text) {
+						blocks.push({ id: stableId('tx_', text.slice(0, 64)), type: 'text', status: 'completed', format: 'markdown', content: text });
+					}
+				}
+
+				return blocks;
+			}
+
+			const list = findList();
+			if (!list) return JSON.stringify({ ok: false, reason: 'chat_list_not_found' });
+
+			const rows = getRows(list);
+			const now = new Date().toISOString();
+			let messages = rows.map((row, index) => {
+				const role = rowRole(row);
+				const text = textOf(row);
+				const messageId = stableId('msg_' + role, index + ':' + role);
+				return {
+					id: messageId,
+					role,
+					status: 'completed',
+					createdAt: now,
+					updatedAt: now,
+					blocks: extractBlocks(row, messageId),
+					metadata: { domIndex: index, source: 'snapshot_script' }
+				};
+			});
+
+			// Merge consecutive same-role messages where later content prefixes earlier
+			{
+				const merged = [];
+				for (const msg of messages) {
+					if (merged.length > 0) {
+						const prev = merged[merged.length - 1];
+						if (prev.role === msg.role) {
+							const prevText = prev.blocks.map(b => typeof b.content === 'string' ? b.content : '').join('');
+							const curText = msg.blocks.map(b => typeof b.content === 'string' ? b.content : '').join('');
+							if (prevText.length > 0 && curText.startsWith(prevText)) {
+								merged[merged.length - 1] = { ...prev, blocks: msg.blocks };
+								continue;
+							}
+						}
+					}
+					merged.push(msg);
+				}
+				messages = merged;
+			}
+
+			return JSON.stringify({ ok: true, result: { messages } });
+		} catch (error) {
+			return JSON.stringify({ ok: false, reason: error instanceof Error ? error.message : String(error) });
+		}
+	})();`.trim();
 }
 
 /**
@@ -319,42 +683,122 @@ export function buildStopGenerationScript(): string {
 export function buildSessionListScript(): string {
 	return `(() => {
 		try {
-			const aux = document.querySelector('#workbench.parts.auxiliarybar') || document.querySelector('[id*="auxiliarybar"]');
-			if (!aux) return JSON.stringify({ ok: false, reason: 'no_auxiliary_bar' });
+			const normalize = value => (value || '').replace(/\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
 
-			// Find the session list monaco-list (not the messages list)
-			const lists = Array.from(aux.querySelectorAll('.monaco-list'));
-			const sessionList = lists.find(l => l.classList.contains('selection-single'));
-			if (!sessionList) return JSON.stringify({ ok: false, reason: 'no_session_list' });
+			const viewer = document.querySelector('[class*="agent-sessions-viewer"]');
+			if (!viewer) {
+				return JSON.stringify({ ok: false, reason: 'no_session_viewer' });
+			}
+
+			const sessionList = Array.from(viewer.querySelectorAll('.monaco-list')).find(list => {
+				const aria = normalize(list.getAttribute('aria-label'));
+				if (/智能体会话|agent sessions/i.test(aria)) return true;
+				return Array.from(list.querySelectorAll('.monaco-list-row')).some(row => row.querySelector('.monaco-highlighted-label'));
+			});
+			if (!sessionList) {
+				return JSON.stringify({ ok: false, reason: 'no_session_list' });
+			}
 
 			const rows = Array.from(sessionList.querySelectorAll('.monaco-list-row'));
-			const sessions = rows.map((row, index) => {
-				const titleEl = row.querySelector('.monaco-highlighted-label');
-				const title = titleEl ? (titleEl.textContent || '').trim() : ('会话 ' + (index + 1));
-				const active = row.classList.contains('focused') || row.classList.contains('selected');
-				const sessionId = row.id || 'session_' + index + '_' + title.replace(/[^a-zA-Z0-9\\u4e00-\\u9fff]/g, '_').slice(0, 32);
-				const timeEl = row.querySelector('.agent-session-status-time');
-				const updatedAt = timeEl ? (timeEl.textContent || '').trim() : undefined;
-				const descEl = row.querySelector('.agent-session-description');
-				const preview = descEl ? (descEl.textContent || '').trim().slice(0, 60) : undefined;
-				return { sessionId, title, index, active, updatedAt, preview, source: 'dom' };
+			const sessions = [];
+			let visibleIndex = 0;
+			let activeSessionId;
+
+			rows.forEach((row, domIndex) => {
+				const title = normalize(
+					row.querySelector('.monaco-highlighted-label')?.textContent ||
+					row.querySelector('.label-name')?.textContent
+				);
+
+				if (!title || title === '更多' || /^更多\\d*$/.test(title)) return;
+
+				const active =
+					row.getAttribute('aria-selected') === 'true' ||
+					row.classList.contains('selected') ||
+					row.classList.contains('focused');
+
+				const sessionId =
+					'session_' +
+					domIndex +
+					'_' +
+					title.replace(/[^a-zA-Z0-9\\u4e00-\\u9fff]/g, '_').slice(0, 32);
+
+				const timeEl = row.querySelector('[class*="time"], [class*="date"], [class*="timestamp"]');
+				const updatedAt = timeEl ? normalize(timeEl.textContent) : undefined;
+
+				sessions.push({
+					sessionId,
+					title,
+					index: visibleIndex,
+					active,
+					updatedAt,
+					source: 'dom'
+				});
+
+				if (active) activeSessionId = sessionId;
+				visibleIndex += 1;
 			});
 
-			// Get active session from chat view title
-			let activeSessionId = sessions.find(s => s.active)?.sessionId;
+			// If no row had active marker, try fallback via title matching
 			if (!activeSessionId) {
-				const activeTitleEl = document.querySelector('.action-label.chat-view-title-label-container');
-				if (activeTitleEl) {
-					const activeTitle = (activeTitleEl.textContent || '').trim();
-					const found = sessions.find(s => s.title === activeTitle);
-					if (found) activeSessionId = found.sessionId;
+				for (const s of sessions) s.active = false;
+
+				const activeTitle = normalize(
+					document.querySelector('.action-label.chat-view-title-label-container .chat-view-title-label')?.textContent ||
+					document.querySelector('.action-label.chat-view-title-label-container')?.textContent ||
+					document.querySelector('[class*="chat-title"]')?.textContent
+				);
+
+				if (activeTitle) {
+					const found = sessions.find(s => normalize(s.title) === activeTitle);
+					if (found) {
+						found.active = true;
+						activeSessionId = found.sessionId;
+					}
 				}
-			}
-			if (!activeSessionId && sessions.length > 0) {
-				activeSessionId = sessions[0].sessionId;
 			}
 
 			return JSON.stringify({ ok: true, result: { sessions, activeSessionId } });
+		} catch (e) {
+			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
+		}
+	})();
+	`.trim();
+}
+
+/**
+ * Build script to ensure the agent sessions sidebar is visible.
+ *
+ * Strategy:
+ * 1. If `agent-sessions-viewer` exists and is actually visible, do nothing.
+ * 2. Otherwise click the titlebar button with aria-label like "显示智能体会话边栏".
+ */
+export function buildOpenSessionSidebarScript(): string {
+	return `(() => {
+		try {
+			const existing = document.querySelector('[class*="agent-sessions-viewer"]');
+			const isVisible = existing instanceof HTMLElement
+				? existing.getBoundingClientRect().width > 24 && existing.getBoundingClientRect().height > 24 && existing.clientWidth > 24
+				: false;
+			if (isVisible) {
+				return JSON.stringify({ ok: true, action: 'already_open' });
+			}
+
+			const toggle = Array.from(document.querySelectorAll('button, [role="button"], a, .action-label'))
+				.find(el => {
+					if (!(el instanceof HTMLElement)) return false;
+					const aria = (el.getAttribute('aria-label') || '').trim();
+					const text = (el.textContent || '').trim();
+					return /智能体会话边栏/.test(aria) || /智能体会话边栏/.test(text);
+				});
+
+			if (!(toggle instanceof HTMLElement)) {
+				return JSON.stringify({ ok: false, reason: 'no_session_sidebar_toggle' });
+			}
+
+			toggle.click();
+			toggle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+			return JSON.stringify({ ok: true, action: 'opened_sidebar' });
 		} catch (e) {
 			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
 		}
@@ -369,24 +813,24 @@ export function buildSwitchSessionScript(index: number): string {
 	const idx = Math.floor(index);
 	return `(() => {
 		try {
-			const aux = document.querySelector('#workbench.parts.auxiliarybar') || document.querySelector('[id*="auxiliarybar"]');
-			if (!aux) return JSON.stringify({ ok: false, reason: 'no_auxiliary_bar' });
-
-			const lists = Array.from(aux.querySelectorAll('.monaco-list'));
-			const sessionList = lists.find(l => l.classList.contains('selection-single'));
+			const sessionList = Array.from(document.querySelectorAll('.monaco-list'))
+				.find(l => l.closest('[class*="agent-sessions-viewer"]'));
 			if (!sessionList) return JSON.stringify({ ok: false, reason: 'no_session_list' });
 
-			const rows = Array.from(sessionList.querySelectorAll('.monaco-list-row'));
+			// Filter out non-session rows (e.g. "更多")
+			const rows = Array.from(sessionList.querySelectorAll('.monaco-list-row')).filter(row => {
+				const title = (row.querySelector('.monaco-highlighted-label')?.textContent || '').trim();
+				return title && !/^更多\\d*$/.test(title);
+			});
+
 			const targetRow = rows[${idx}];
 			if (!targetRow) return JSON.stringify({ ok: false, reason: 'session_index_out_of_range', index: ${idx}, count: rows.length });
 
-			// Click the session row
 			if (targetRow instanceof HTMLElement) {
 				targetRow.click();
-				// Also try to focus on the inner clickable element
 				const inner = targetRow.querySelector('[role="button"], .monaco-highlighted-label');
 				if (inner instanceof HTMLElement) inner.click();
-				return JSON.stringify({ ok: true, sessionId: targetRow.id || 'session_${idx}', title: (targetRow.querySelector('.monaco-highlighted-label')?.textContent || '').trim() });
+				return JSON.stringify({ ok: true, title: (targetRow.querySelector('.monaco-highlighted-label')?.textContent || '').trim() });
 			}
 			return JSON.stringify({ ok: false, reason: 'row_not_clickable' });
 		} catch (e) {
@@ -601,20 +1045,61 @@ export function buildApplySlashScript(index: number, insertOnly: boolean): strin
  * Build script to get the list of available agents.
  *
  * Strategy (from CDP probe):
- * The agent picker is accessed by clicking the chat view title label
- * (aria-label="选取代理会话"), which opens a quick-input list.
+ * The real agent picker lives in the chat input toolbar as the
+ * "设置智能体 / 打开智能体选取器" control, and opens a context-view list.
  */
 export function buildAgentListScript(): string {
 	return `(() => {
 		try {
-			// Click the agent picker button
-			const pickerBtn = document.querySelector('.action-label.chat-view-title-label-container');
-			if (!pickerBtn) return JSON.stringify({ ok: false, reason: 'no_agent_picker_button' });
-			if (pickerBtn instanceof HTMLElement) {
-				pickerBtn.click();
+			function hasAgentMenu() {
+				return Array.from(document.querySelectorAll('.context-view .monaco-list')).some(list => {
+					if (list.getAttribute('role') !== 'menu') return false;
+					const labels = Array.from(list.querySelectorAll('.monaco-list-row')).map(row => ((row.getAttribute('aria-label') || '').split(/[，,]/)[0] || row.textContent || '').replace(/\\s+/g, ' ').trim());
+					return labels.some(label => /^(Agent|Ask|Plan)$/i.test(label));
+				});
 			}
-			// Wait for quick input widget to open (will be scanned after delay via agentList response)
-			return JSON.stringify({ ok: true, action: 'opened_picker' });
+
+			if (hasAgentMenu()) {
+				return Promise.resolve(JSON.stringify({ ok: true, action: 'already_open' }));
+			}
+
+			const labelBtn = document.querySelector('li.chat-input-picker-item.chat-mode-picker-item .dropdown-label');
+			const anchorBtn = document.querySelector('li.chat-input-picker-item.chat-mode-picker-item a.action-label[aria-label*="设置智能体"]');
+			const dropdownBtn = document.querySelector('li.chat-input-picker-item.chat-mode-picker-item .monaco-dropdown');
+			const quickInput = document.querySelector('.quick-input-widget:not([aria-hidden="true"])');
+			if (quickInput) {
+				document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+			}
+
+			const attempts = [
+				() => { if (labelBtn instanceof HTMLElement) labelBtn.click(); },
+				() => {
+					if (anchorBtn instanceof HTMLElement) {
+						anchorBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 }));
+						anchorBtn.click();
+						anchorBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0 }));
+					}
+				},
+				() => { if (dropdownBtn instanceof HTMLElement) dropdownBtn.click(); }
+			];
+
+			return new Promise(resolve => {
+				let index = 0;
+				const tryNext = () => {
+					if (hasAgentMenu()) {
+						resolve(JSON.stringify({ ok: true, action: 'opened_picker' }));
+						return;
+					}
+					const attempt = attempts[index++];
+					if (!attempt) {
+						resolve(JSON.stringify({ ok: false, reason: 'agent_menu_not_opened' }));
+						return;
+					}
+					attempt();
+					setTimeout(tryNext, 180);
+				};
+				setTimeout(tryNext, 50);
+			});
 		} catch (e) {
 			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
 		}
@@ -623,36 +1108,67 @@ export function buildAgentListScript(): string {
 }
 
 /**
- * Build script to scan the agent list from the quick-input-widget.
+ * Build script to scan the agent list from the context-view or quick-input widget.
  */
 export function buildScanAgentListScript(): string {
 	return `(() => {
 		try {
-			// Check quick-input-widget which is the standard VS Code agent picker
+			function normalize(text) {
+				return (text || '').replace(/\\s+/g, ' ').trim();
+			}
+			function canonicalizeAgentLabel(text) {
+				const compact = (text || '').replace(/\\s+/g, '').toLowerCase();
+				if (compact === 'agent' || compact === '智能体') return 'Agent';
+				if (compact === 'ask') return 'Ask';
+				if (compact === 'plan') return 'Plan';
+				return normalize(text);
+			}
+			function isAgentRow(row) {
+				const label = canonicalizeAgentLabel((row.getAttribute('aria-label') || '').split(/[，,]/)[0] || row.textContent || '');
+				return /^(Agent|Ask|Plan)$/i.test(label) || /配置自定义智能体/.test(label);
+			}
+
+			function parseRows(rows, source) {
+				const agents = rows.map((row, i) => {
+					const rawText = normalize(row.textContent || '');
+					const rawAria = normalize(row.getAttribute('aria-label') || '');
+					const ariaLabel = canonicalizeAgentLabel(rawAria.split(/[，,]/)[0] || '');
+					const textLabel = canonicalizeAgentLabel(rawText.split(/[，,]/)[0] || rawText);
+					const label = ariaLabel || textLabel;
+					const description = normalize(rawText.slice(label.length));
+					const active = row.classList.contains('focused') || row.classList.contains('selected') || row.getAttribute('aria-selected') === 'true';
+					return {
+						id: label.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '_') || ('agent_' + i),
+						name: label,
+						description,
+						index: i,
+						active,
+						source
+					};
+				}).filter(agent => agent.name && !/配置自定义智能体/.test(agent.name) && !/昨天|今天|天前|周前|个月前|本地\\s*[•·]|正在运行/.test(agent.name + ' ' + agent.description));
+
+				const activeAgent = agents.find(agent => agent.active);
+				if (activeAgent) {
+					window.__copilotMirrorLastActiveAgent = { id: activeAgent.id, name: activeAgent.name };
+				}
+				return { agents, activeAgentId: activeAgent ? activeAgent.id : window.__copilotMirrorLastActiveAgent?.id };
+			}
+
+			const contextList = Array.from(document.querySelectorAll('.context-view .monaco-list'))
+				.find(list => list.getAttribute('role') === 'menu' && Array.from(list.querySelectorAll('.monaco-list-row')).some(row => isAgentRow(row)));
+			if (contextList) {
+				const rows = Array.from(contextList.querySelectorAll('.monaco-list-row')).filter(row => row.classList.contains('action'));
+				return JSON.stringify({ ok: true, result: parseRows(rows, 'context_view') });
+			}
+
 			const qiWidget = document.querySelector('.quick-input-widget:not([aria-hidden="true"])');
-			if (!qiWidget) return JSON.stringify({ ok: false, reason: 'no_quick_input_widget' });
+			if (!qiWidget) return JSON.stringify({ ok: false, reason: 'no_agent_picker_overlay' });
 
 			const list = qiWidget.querySelector('.monaco-list');
 			if (!list) return JSON.stringify({ ok: false, reason: 'no_list_in_picker' });
-
-			const rows = Array.from(list.querySelectorAll('.monaco-list-row'));
-			const agents = rows.map((row, i) => {
-				const labelEl = row.querySelector('.monaco-highlighted-label');
-				const label = labelEl ? (labelEl.textContent || '').trim() : (row.textContent || '').trim().split('\\n')[0];
-				const active = row.classList.contains('focused') || row.classList.contains('selected');
-				const descEl = row.querySelector('.monaco-icon-label-description-row');
-				const description = descEl ? (descEl.textContent || '').trim() : '';
-				return {
-					id: row.id || 'agent_' + i,
-					name: label,
-					description,
-					index: i,
-					active,
-					source: 'dom'
-				};
-			});
-
-			return JSON.stringify({ ok: true, result: { agents } });
+			const rows = Array.from(list.querySelectorAll('.monaco-list-row')).filter(row => isAgentRow(row));
+			if (rows.length === 0) return JSON.stringify({ ok: false, reason: 'no_agent_rows_in_quick_input' });
+			return JSON.stringify({ ok: true, result: parseRows(rows, 'quick_input') });
 		} catch (e) {
 			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
 		}
@@ -666,20 +1182,53 @@ export function buildScanAgentListScript(): string {
 export function buildSwitchAgentScript(index: number): string {
 	return `(() => {
 		try {
-			const qiWidget = document.querySelector('.quick-input-widget:not([aria-hidden="true"])');
-			if (!qiWidget) return JSON.stringify({ ok: false, reason: 'no_quick_input_widget' });
+			function normalize(text) {
+				return (text || '').replace(/\\s+/g, ' ').trim();
+			}
+			function canonicalizeAgentLabel(text) {
+				const compact = (text || '').replace(/\\s+/g, '').toLowerCase();
+				if (compact === 'agent' || compact === '智能体') return 'Agent';
+				if (compact === 'ask') return 'Ask';
+				if (compact === 'plan') return 'Plan';
+				return normalize(text);
+			}
+			function isAgentRow(row) {
+				const label = canonicalizeAgentLabel((row.getAttribute('aria-label') || '').split(/[，,]/)[0] || row.textContent || '');
+				return /^(Agent|Ask|Plan)$/i.test(label) || /配置自定义智能体/.test(label);
+			}
+			function getAgentRows() {
+				const contextList = Array.from(document.querySelectorAll('.context-view .monaco-list'))
+					.find(list => list.getAttribute('role') === 'menu' && Array.from(list.querySelectorAll('.monaco-list-row')).some(row => isAgentRow(row)));
+				if (contextList) {
+					return Array.from(contextList.querySelectorAll('.monaco-list-row')).filter(row => {
+						const text = normalize((row.getAttribute('aria-label') || '') + ' ' + (row.textContent || ''));
+						return row.classList.contains('action') && isAgentRow(row) && text && !/配置自定义智能体|昨天|今天|天前|周前|个月前|本地\\s*[•·]|正在运行/.test(text);
+					});
+				}
+				const qiWidget = document.querySelector('.quick-input-widget:not([aria-hidden="true"])');
+				if (!qiWidget) return null;
+				const list = qiWidget.querySelector('.monaco-list');
+				if (!list) return null;
+				return Array.from(list.querySelectorAll('.monaco-list-row')).filter(row => {
+					const text = normalize((row.getAttribute('aria-label') || '') + ' ' + (row.textContent || ''));
+					return text && !/配置自定义智能体|昨天|今天|天前|周前|个月前|本地\\s*[•·]|正在运行/.test(text);
+				});
+			}
 
-			const list = qiWidget.querySelector('.monaco-list');
-			if (!list) return JSON.stringify({ ok: false, reason: 'no_list_in_picker' });
-
-			const rows = Array.from(list.querySelectorAll('.monaco-list-row'));
+			const rows = getAgentRows();
+			if (!rows) return JSON.stringify({ ok: false, reason: 'no_agent_picker_overlay' });
 			const target = rows[${Math.floor(index)}];
 			if (!target) return JSON.stringify({ ok: false, reason: 'index_out_of_range', count: rows.length });
 			if (target instanceof HTMLElement) {
+				const label = canonicalizeAgentLabel(((target.getAttribute('aria-label') || '').split(/[，,]/)[0] || '').trim()) || canonicalizeAgentLabel(target.textContent || '');
+				const id = label.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '_') || ('agent_${Math.floor(index)}');
+				window.__copilotMirrorLastActiveAgent = { id, name: label };
+				target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1 }));
 				target.click();
-				target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+				target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, buttons: 0 }));
+				return JSON.stringify({ ok: true, result: { id, name: label } });
 			}
-			return JSON.stringify({ ok: true });
+			return JSON.stringify({ ok: false, reason: 'target_not_clickable' });
 		} catch (e) {
 			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
 		}
@@ -694,7 +1243,9 @@ export function buildCloseAgentPickerScript(): string {
 	return `(() => {
 		try {
 			const qiWidget = document.querySelector('.quick-input-widget:not([aria-hidden="true"])');
-			if (qiWidget) {
+			const contextView = Array.from(document.querySelectorAll('.context-view'))
+				.find(view => view.getAttribute('aria-hidden') !== 'true' && Array.from(view.querySelectorAll('.monaco-list-row')).some(row => /^(Agent|Ask|Plan)$/i.test(((row.getAttribute('aria-label') || '').split(/[，,]/)[0] || row.textContent || '').replace(/\\s+/g, ' ').trim()) || /配置自定义智能体/.test((row.getAttribute('aria-label') || row.textContent || '').replace(/\\s+/g, ' ').trim())));
+			if (qiWidget || contextView) {
 				// Press Escape to close
 				const ev = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true });
 				document.dispatchEvent(ev);
@@ -714,18 +1265,35 @@ export function buildCloseAgentPickerScript(): string {
 export function buildGetActiveAgentScript(): string {
 	return `(() => {
 		try {
-			const el = document.querySelector('.action-label.chat-view-title-label-container');
-			if (!el) return JSON.stringify({ ok: false, reason: 'no_title' });
-			const text = (el.textContent || '').trim();
-			// The label may contain session title or agent name - extract agent info
-			// Also check the chat input placeholder for agent hints
-			const chatCtrl = document.querySelector('.chat-controls-container');
-			const input = chatCtrl ? chatCtrl.querySelector('[aria-label]') : null;
-			const ariaLabel = input ? input.getAttribute('aria-label') || '' : '';
-			// ariaLabel contains format: "聊天输入 (智能体)，编辑工作区中的文件。，AgentName。..."
-			let agentMatch = ariaLabel.match(/，([^，。]+)。/);
-			let agent = agentMatch ? agentMatch[1].trim() : text;
-			return JSON.stringify({ ok: true, result: { agent, title: text, rawAria: ariaLabel } });
+			const inputContext = document.querySelector('.native-edit-context[role="textbox"], .interactive-input-editor .native-edit-context, .interactive-input-editor textarea');
+			const inputAria = inputContext instanceof Element ? ((inputContext.getAttribute('aria-label') || '').trim()) : '';
+			const ariaMatch = inputAria.match(/(?:聊天输入|Chat Input)\s*\(([^)]+)\)/i);
+			if (ariaMatch?.[1]) {
+				const agent = ariaMatch[1].trim().replace(/^[（(\s]+|[）)\s]+$/g, '');
+				const normalizedAgent = agent === '智能体' ? 'Agent' : agent;
+				const agentId = normalizedAgent.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '_');
+				window.__copilotMirrorLastActiveAgent = { id: agentId, name: normalizedAgent };
+				return JSON.stringify({ ok: true, result: { agent: normalizedAgent, agentId, source: 'input_aria' } });
+			}
+
+			const cached = window.__copilotMirrorLastActiveAgent;
+			if (cached && cached.id && cached.name) {
+				return JSON.stringify({ ok: true, result: { agent: cached.name, agentId: cached.id, source: 'cache' } });
+			}
+
+			const contextList = Array.from(document.querySelectorAll('.context-view .monaco-list'))
+				.find(list => list.getAttribute('role') === 'menu' && Array.from(list.querySelectorAll('.monaco-list-row')).some(row => /^(Agent|Ask|Plan)$/i.test(((row.getAttribute('aria-label') || '').split(/[，,]/)[0] || row.textContent || '').replace(/\\s+/g, ' ').trim()) || /配置自定义智能体/.test((row.getAttribute('aria-label') || row.textContent || '').replace(/\\s+/g, ' ').trim())));
+			if (contextList) {
+				const activeRow = Array.from(contextList.querySelectorAll('.monaco-list-row')).find(row => row.classList.contains('focused') || row.classList.contains('selected') || row.getAttribute('aria-selected') === 'true');
+				if (activeRow) {
+					const agent = ((activeRow.getAttribute('aria-label') || '').split(/[，,]/)[0] || activeRow.textContent || '').replace(/\\s+/g, ' ').trim();
+					const agentId = agent.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '_');
+					window.__copilotMirrorLastActiveAgent = { id: agentId, name: agent };
+					return JSON.stringify({ ok: true, result: { agent, agentId, source: 'context_view' } });
+				}
+			}
+
+			return JSON.stringify({ ok: false, reason: 'active_agent_not_found' });
 		} catch (e) {
 			return JSON.stringify({ ok: false, reason: e instanceof Error ? e.message : String(e) });
 		}

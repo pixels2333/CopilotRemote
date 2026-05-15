@@ -127,11 +127,11 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
         top: 6,
         bottom: MediaQuery.of(context).padding.bottom + 6,
       ),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
+      decoration: const BoxDecoration(
+        color: Color(0xFF1C1C1F),
         border: Border(
           top: BorderSide(
-            color: colorScheme.outline.withOpacity(0.15),
+            color: Color(0xFF2A2A2E),
           ),
         ),
       ),
@@ -152,15 +152,17 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: colorScheme.outline.withOpacity(0.2),
+                      color: isConnected
+                          ? const Color(0xFF6366F1)
+                          : const Color(0xFF3F3F46),
                     ),
                   ),
                   child: Icon(
                     Icons.terminal_rounded,
                     size: 18,
                     color: isConnected
-                        ? colorScheme.primary
-                        : colorScheme.onSurface.withOpacity(0.2),
+                        ? const Color(0xFF6366F1)
+                        : const Color(0xFF52525B),
                   ),
                 ),
               ),
@@ -180,16 +182,16 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
                   borderSide: BorderSide.none,
                 ),
                 filled: true,
-                fillColor: colorScheme.surfaceContainerHigh,
+                fillColor: const Color(0xFF1E1E24),
                 contentPadding: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 10),
-                hintStyle: TextStyle(
-                  color: colorScheme.onSurface.withOpacity(0.3),
+                hintStyle: const TextStyle(
+                  color: Color(0xFF52525B),
                 ),
               ),
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 14,
-                color: colorScheme.onSurface,
+                color: Color(0xFFE4E4E7),
               ),
               onSubmitted: (_) => _send(ref),
             ),
@@ -214,20 +216,20 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
                   )
                 : Material(
                     color: isConnected
-                        ? colorScheme.primary
-                        : colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
+                        ? const Color(0xFF6366F1)
+                        : const Color(0xFF3F3F46),
+                    borderRadius: BorderRadius.circular(20),
                     child: InkWell(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(20),
                       onTap: isConnected ? () => _send(ref) : null,
-                      child: Container(
-                        width: 38,
-                        height: 38,
+                      child: SizedBox(
+                        width: 40,
+                        height: 40,
                         child: Icon(
                           Icons.arrow_upward_rounded,
                           color: isConnected
-                              ? colorScheme.onPrimary
-                              : colorScheme.onSurface.withOpacity(0.3),
+                              ? Colors.white
+                              : const Color(0xFF71717A),
                           size: 20,
                         ),
                       ),
@@ -236,6 +238,7 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
           ),
         ],
       ),
+    ),
     );
   }
 }

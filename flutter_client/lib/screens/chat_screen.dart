@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/chat_provider.dart';
+import '../providers/settings_provider.dart';
 import '../models/types.dart';
 import '../widgets/connection_status_bar.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/chat_composer.dart';
 import '../widgets/session_drawer.dart';
 import '../widgets/agent_chip.dart';
+import 'settings_screen.dart';
 
 class ChatScreen extends ConsumerWidget {
   const ChatScreen({super.key});
@@ -68,12 +70,44 @@ class ChatScreen extends ConsumerWidget {
             const AgentChip(),
           if (chatState.connectionStatus == ConnectionStatus.connected)
             const SizedBox(width: 4),
+          // Settings button
+          IconButton(
+            icon: const Icon(Icons.settings_rounded),
+            tooltip: '设置',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+            },
+          ),
+          // Refresh button (always visible to trigger re-sync)
+          IconButton(
+            icon: chatState.isLoadingSessions
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh_rounded),
+            tooltip: '刷新/重新同步',
+            onPressed: () => _refresh(ref),
+          ),
           if (chatState.connectionStatus == ConnectionStatus.connected)
-            IconButton(
-              icon: const Icon(Icons.swap_horiz_rounded),
-              tooltip: 'Switch session',
-              onPressed: () => _showSessionDrawer(context, ref),
-            ),
+            chatState.isLoadingSessions
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                : IconButton(
+                    icon: const Icon(Icons.swap_horiz_rounded),
+                    tooltip: '切换会话',
+                    onPressed: () => _showSessionDrawer(context, ref),
+                  ),
         ],
       ),
       body: Column(
@@ -101,7 +135,7 @@ class ChatScreen extends ConsumerWidget {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 12),
-            Text('Switching session…',
+            Text('切换会话中…',
                 style: TextStyle(color: Colors.grey)),
           ],
         ),
@@ -117,13 +151,13 @@ class ChatScreen extends ConsumerWidget {
             Icon(Icons.chat_bubble_outline_rounded,
                 size: 48, color: colorScheme.onSurface.withOpacity(0.3)),
             const SizedBox(height: 12),
-            Text('No messages yet',
+            Text('暂无消息',
                 style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: colorScheme.onSurface.withOpacity(0.5))),
             const SizedBox(height: 4),
-            Text('Start a conversation in VS Code',
+            Text('在 VS Code 中开始对话',
                 style: TextStyle(
                     fontSize: 13,
                     color: colorScheme.onSurface.withOpacity(0.3))),
@@ -141,24 +175,24 @@ class ChatScreen extends ConsumerWidget {
             Icon(Icons.cloud_off_rounded,
                 size: 48, color: colorScheme.onSurface.withOpacity(0.3)),
             const SizedBox(height: 12),
-            Text('Not connected',
+            Text('未连接',
                 style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: colorScheme.onSurface.withOpacity(0.5))),
             const SizedBox(height: 4),
-            Text('Start the Node.js Bridge to connect.',
+            Text('启动 Node.js Bridge 来连接',
                 style: TextStyle(
                     fontSize: 13,
                     color: colorScheme.onSurface.withOpacity(0.3))),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: () {
-                ref.read(chatProvider.notifier).connect(
-                    'ws://127.0.0.1:17321/copilot-mirror/ws');
+                final url = ref.read(settingsProvider).bridgeUrl;
+                ref.read(chatProvider.notifier).connect(url);
               },
               icon: const Icon(Icons.link_rounded),
-              label: const Text('Connect'),
+              label: const Text('连接'),
             ),
           ],
         ),
@@ -212,7 +246,63 @@ class ChatScreen extends ConsumerWidget {
     );
   }
 
-  void _showSessionDrawer(BuildContext context, WidgetRef ref) {
+  void _refresh(WidgetRef ref) {
+    final notifier = ref.read(chatProvider.notifier);
+    notifier.refresh();
+  }
+
+  /// Show settings dialog to configure CDP connection
+  Future<void> _showSettingsDialog(BuildContext context, WidgetRef ref) async {
+    final settings = ref.read(settingsProvider);
+    final controller = TextEditingController(text: settings.bridgeUrl);
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('CDP 连接设置'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'CDP WebSocket URL',
+              hintText: 'ws://127.0.0.1:9229/devtools/page/...',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.link),
+            ),
+            validator: (v) {
+              if (v == null || v.isEmpty) return '请输入 WebSocket URL';
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                final newUrl = controller.text.trim();
+                ref.read(settingsProvider.notifier).setBridgeUrl(newUrl);
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+  }
+
+  Future<void> _showSessionDrawer(BuildContext context, WidgetRef ref) async {
+    await ref.read(chatProvider.notifier).listSessions();
+    if (!context.mounted) {
+      return;
+    }
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,

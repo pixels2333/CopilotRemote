@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/message.dart';
+import '../models/types.dart';
 
 class ToolCallBlockView extends StatelessWidget {
   final MirrorBlock block;
@@ -27,10 +28,18 @@ class ToolCallBlockView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final toolName = block.title ?? block.language ?? 'Tool';
-    final status = block.status;
-    final isError = block.isError;
+    final toolName = block.displayName ??
+      block.toolName ??
+      block.language ??
+      block.metadata?['name'] as String? ??
+      'Tool';
+    final summary = block.summary ?? block.content;
+    final status = block.toolState == ToolState.running
+      ? MirrorStatus.streaming
+      : (block.toolState == ToolState.failed
+        ? MirrorStatus.failed
+        : block.status);
+    final isError = status == MirrorStatus.failed;
 
     Color statusColor;
     IconData statusIcon;
@@ -38,18 +47,18 @@ class ToolCallBlockView extends StatelessWidget {
       case MirrorStatus.pending:
         statusColor = Colors.grey;
         statusIcon = Icons.schedule_rounded;
-      case MirrorStatus.running:
-        statusColor = Colors.blue;
-        statusIcon = Icons.sync_rounded;
-      case MirrorStatus.success:
-        statusColor = Colors.green;
-        statusIcon = Icons.check_circle_rounded;
-      case MirrorStatus.error:
-        statusColor = Colors.red;
-        statusIcon = Icons.error_rounded;
       case MirrorStatus.streaming:
         statusColor = Colors.blue;
-        statusIcon = Icons.horizontal_rule_rounded;
+        statusIcon = Icons.sync_rounded;
+      case MirrorStatus.completed:
+        statusColor = const Color(0xFF4ADE80);
+        statusIcon = Icons.check_circle_outline_rounded;
+      case MirrorStatus.failed:
+        statusColor = Colors.red;
+        statusIcon = Icons.error_outline_rounded;
+      case MirrorStatus.cancelled:
+        statusColor = Colors.amber;
+        statusIcon = Icons.cancel_outlined;
     }
 
     return Padding(
@@ -59,12 +68,12 @@ class ToolCallBlockView extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(10),
           color: isError
-              ? colorScheme.errorContainer.withOpacity(0.3)
-              : colorScheme.surfaceContainerLow,
+              ? const Color(0x157F1D1D)
+              : const Color(0x0F4ADE80),
           border: Border.all(
             color: isError
-                ? colorScheme.error.withOpacity(0.3)
-                : colorScheme.outline.withOpacity(0.15),
+                ? const Color(0x407F1D1D)
+                : const Color(0x404ADE80),
           ),
         ),
         child: Row(
@@ -86,25 +95,25 @@ class ToolCallBlockView extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(toolName,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
-                        color: colorScheme.onSurface,
+                        color: Color(0xFF4ADE80),
                       )),
-                  if (block.content.isNotEmpty)
+                  if (summary.isNotEmpty)
                     Text(
-                      block.content,
+                      summary,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 11,
-                        color: colorScheme.onSurface.withOpacity(0.4),
+                        color: Color(0xFF71717A),
                       ),
                     ),
                 ],
               ),
             ),
-            if (status == MirrorStatus.running)
+            if (status == MirrorStatus.streaming)
               SizedBox(
                 width: 16, height: 16,
                 child: CircularProgressIndicator(
