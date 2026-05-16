@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/chat_provider.dart';
 import '../models/types.dart';
 import '../models/slash_command.dart';
+import '../theme/vscode_colors.dart';
+import 'glass_container.dart';
 
 class ChatComposer extends ConsumerStatefulWidget {
   const ChatComposer({super.key});
@@ -120,125 +122,125 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
       _focusNode.unfocus();
     }
 
-    return Container(
+    return Padding(
       padding: EdgeInsets.only(
-        left: 12,
-        right: 8,
-        top: 6,
-        bottom: MediaQuery.of(context).padding.bottom + 6,
-      ),
-      decoration: const BoxDecoration(
-        color: Color(0xFF1C1C1F),
-        border: Border(
-          top: BorderSide(
-            color: Color(0xFF2A2A2E),
-          ),
-        ),
+        left: 16,
+        right: 16,
+        bottom: MediaQuery.of(context).padding.bottom + 16,
       ),
       child: CompositedTransformTarget(
         link: _slashLayerLink,
-        child: Row(
-          children: [
-            // Slash command button
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(8),
-                onTap: isConnected ? () => _showSlashMenu(ref) : null,
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  margin: const EdgeInsets.only(right: 4),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
+        child: GlassContainer(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          blur: 20,
+          opacity: 0.8,
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: Theme.of(context).dividerColor.withOpacity(0.1),
+            width: 0.5,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // Slash command button
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(24),
+                  onTap: isConnected ? () => _showSlashMenu(ref) : null,
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
                       color: isConnected
-                          ? const Color(0xFF6366F1)
-                          : const Color(0xFF3F3F46),
+                          ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.4)
+                          : Colors.grey.withOpacity(0.1),
+                    ),
+                    child: Icon(
+                      Icons.alternate_email_rounded,
+                      size: 20,
+                      color: isConnected
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.grey,
                     ),
                   ),
-                  child: Icon(
-                    Icons.terminal_rounded,
-                    size: 18,
-                    color: isConnected
-                        ? const Color(0xFF6366F1)
-                        : const Color(0xFF52525B),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  enabled: isConnected && !isSending,
+                  textInputAction: TextInputAction.send,
+                  minLines: 1,
+                  maxLines: 8,
+                  decoration: InputDecoration(
+                    hintText: isConnected ? '问问 Copilot…' : '未连接',
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 10),
+                    hintStyle: TextStyle(
+                      color: Theme.of(context).hintColor.withOpacity(0.5),
+                      fontSize: 15,
+                    ),
                   ),
+                  style: const TextStyle(fontSize: 15),
+                  onSubmitted: (_) => _send(ref),
                 ),
               ),
-            ),
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                focusNode: _focusNode,
-              enabled: isConnected && !isSending,
-              textInputAction: TextInputAction.send,
-              minLines: 1,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: isConnected ? 'Message…' : 'Not connected',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                filled: true,
-                fillColor: const Color(0xFF1E1E24),
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 10),
-                hintStyle: const TextStyle(
-                  color: Color(0xFF52525B),
-                ),
+              const SizedBox(width: 4),
+              // Send Button inside the bar
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _controller,
+                builder: (context, value, child) {
+                  final hasText = value.text.trim().isNotEmpty;
+                  final canSend = isConnected && !isSending && hasText;
+                  
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: canSend
+                          ? const LinearGradient(
+                              colors: VSCodeColors.copilotGradient,
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            )
+                          : null,
+                      color: canSend 
+                          ? null 
+                          : Theme.of(context).disabledColor.withOpacity(0.1),
+                    ),
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      icon: isSending
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Icon(
+                              Icons.arrow_upward_rounded,
+                              size: 22,
+                              color: canSend ? Colors.white : Colors.grey.withOpacity(0.5),
+                            ),
+                      onPressed: canSend ? () => _send(ref) : null,
+                    ),
+                  );
+                },
               ),
-              style: const TextStyle(
-                fontSize: 14,
-                color: Color(0xFFE4E4E7),
-              ),
-              onSubmitted: (_) => _send(ref),
-            ),
+            ],
           ),
-          const SizedBox(width: 6),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            child: isSending
-                ? SizedBox(
-                    width: 38,
-                    height: 38,
-                    child: Center(
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: colorScheme.primary,
-                        ),
-                      ),
-                    ),
-                  )
-                : Material(
-                    color: isConnected
-                        ? const Color(0xFF6366F1)
-                        : const Color(0xFF3F3F46),
-                    borderRadius: BorderRadius.circular(20),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: isConnected ? () => _send(ref) : null,
-                      child: SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Icon(
-                          Icons.arrow_upward_rounded,
-                          color: isConnected
-                              ? Colors.white
-                              : const Color(0xFF71717A),
-                          size: 20,
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
-        ],
+        ),
       ),
-    ),
     );
   }
 }

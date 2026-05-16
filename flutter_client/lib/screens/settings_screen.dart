@@ -79,6 +79,26 @@ class SettingsScreen extends ConsumerWidget {
             ],
           ),
           const SizedBox(height: 24),
+          Text('外观', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            title: const Text('深色模式'),
+            subtitle: Text(
+              settings.themeMode == ThemeMode.light ? '浅色主题' : '深色主题',
+            ),
+            value: settings.themeMode == ThemeMode.dark,
+            onChanged: (dark) {
+              ref.read(settingsProvider.notifier).setThemeMode(
+                dark ? ThemeMode.dark : ThemeMode.light,
+              );
+            },
+            secondary: Icon(
+              settings.themeMode == ThemeMode.dark
+                  ? Icons.dark_mode_rounded
+                  : Icons.light_mode_rounded,
+            ),
+          ),
+          const SizedBox(height: 24),
           Text('关于', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           const Text('Copilot Mirror v0.1.0'),

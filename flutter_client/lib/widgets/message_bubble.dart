@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../models/types.dart';
+import '../theme/vscode_colors.dart';
 import 'text_block_view.dart';
 import 'thinking_block_view.dart';
 import 'code_block_view.dart';
@@ -20,7 +21,7 @@ class MessageBubble extends StatelessWidget {
     final isSystem = message.role == MessageRole.system;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Column(
         crossAxisAlignment: isUser
             ? CrossAxisAlignment.end
@@ -29,15 +30,26 @@ class MessageBubble extends StatelessWidget {
           // Role label for assistant
           if (isAssistant)
             Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 2),
+              padding: const EdgeInsets.only(left: 4, bottom: 4),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('🤖', style: TextStyle(fontSize: 12)),
-                  const SizedBox(width: 4),
+                  Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: const LinearGradient(colors: VSCodeColors.copilotGradient),
+                    ),
+                    child: const Center(
+                        child: Text('✦',
+                            style: TextStyle(fontSize: 12, color: Colors.white))),
+                  ),
+                  const SizedBox(width: 6),
                   const Text('Copilot',
                       style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
                           color: Color(0xFFA78BFA))),
                 ],
               ),
@@ -46,26 +58,39 @@ class MessageBubble extends StatelessWidget {
           // Bubble
           Container(
             constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.82,
+              maxWidth: MediaQuery.of(context).size.width * 0.88,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: isUser
-                  ? const Color(0xFF6366F1)
-                  : (isSystem
-                      ? const Color(0xFF27272A)
-                      : const Color(0xFF1E1E24)),
-              border: isAssistant ? Border.all(color: const Color(0xFF2A2A2E)) : null,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(16),
-                topRight: const Radius.circular(16),
-                bottomLeft: isUser
-                    ? const Radius.circular(16)
-                    : const Radius.circular(4),
-                bottomRight: isUser
-                    ? const Radius.circular(4)
-                    : const Radius.circular(16),
+              gradient: isUser
+                  ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: VSCodeColors.copilotGradient,
+                    )
+                  : null,
+              color: !isUser
+                  ? (isSystem
+                      ? const Color(0xFF27272A).withOpacity(0.5)
+                      : const Color(0xFF252526))
+                  : null,
+              border: Border.all(
+                color: isUser 
+                  ? Colors.white.withOpacity(0.1) 
+                  : (isAssistant ? Color(0x33FFFFFF) : Colors.transparent),
+                width: 0.8,
               ),
+              borderRadius: BorderRadius.circular(22).copyWith(
+                bottomLeft: isUser ? const Radius.circular(22) : const Radius.circular(6),
+                bottomRight: isUser ? const Radius.circular(6) : const Radius.circular(22),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.12),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
