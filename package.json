@@ -6,7 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"build": "tsc",
-		"start": "node --experimental-specifier-resolution=node dist/bridge.js",
+		"start": "node --experimental-specifier-resolution=node dist/main.js",
 		"dev": "npx tsx src/main.ts",
 		"typecheck": "tsc --noEmit"
 	},

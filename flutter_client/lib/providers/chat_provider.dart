@@ -23,6 +23,7 @@ class ChatState {
   final List<MirrorSlashCommandItem> slashCommands;
   final List<MirrorAgentItem> agents;
   final String? activeAgentId;
+  final Map<String, dynamic>? inputContext;
 
   const ChatState({
     this.messages = const [],
@@ -37,6 +38,7 @@ class ChatState {
     this.slashCommands = const [],
     this.agents = const [],
     this.activeAgentId,
+    this.inputContext,
   });
 
   ChatState copyWith({
@@ -52,7 +54,9 @@ class ChatState {
     List<MirrorSlashCommandItem>? slashCommands,
     List<MirrorAgentItem>? agents,
     String? activeAgentId,
+    Map<String, dynamic>? inputContext,
     bool clearError = false,
+    bool clearInputContext = false,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -67,6 +71,7 @@ class ChatState {
       slashCommands: slashCommands ?? this.slashCommands,
       agents: agents ?? this.agents,
       activeAgentId: activeAgentId ?? this.activeAgentId,
+      inputContext: clearInputContext ? null : (inputContext ?? this.inputContext),
     );
   }
 }
@@ -272,6 +277,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
         }
         break;
 
+      case BridgeEventType.inputContext:
+        state = state.copyWith(inputContext: evt.payload);
+        break;
+
       case BridgeEventType.error:
         state = state.copyWith(
           connectionStatus: ConnectionStatus.failed,
@@ -295,18 +304,48 @@ class ChatNotifier extends StateNotifier<ChatState> {
   void _onDomSnapshot(Map<String, dynamic> event) {
     final raw = event['messages'] as List<dynamic>?;
     if (raw == null) return;
+    final messages = raw
+        .map((m) => MirrorMessage.fromJson(m as Map<String, dynamic>))
+        .toList();
+    final hasStreaming = messages.any((m) =>
+        m.status == MirrorStatus.streaming ||
+        m.blocks.any((b) => b.status == MirrorStatus.streaming));
+
+    bool nextIsSending;
+    if (hasStreaming) {
+      nextIsSending = true;
+    } else if (!state.isSending) {
+      nextIsSending = false;
+    } else {
+      // 之前是发送中但快照没有 streaming 消息
+      // 只有看到至少一条 assistant 消息且全部完成时，才认为结束
+      final assistantMsgs = messages.where((m) => m.role == MessageRole.assistant);
+      if (assistantMsgs.isEmpty) {
+        // AI 还没开始回复，保持发送状态
+        nextIsSending = true;
+      } else {
+        // 所有 assistant 消息都结束了才算结束
+        nextIsSending = !assistantMsgs.every((m) =>
+            m.status == MirrorStatus.completed ||
+            m.status == MirrorStatus.error);
+      }
+    }
+
     state = state.copyWith(
-      messages: raw.map((m) => MirrorMessage.fromJson(m as Map<String, dynamic>)).toList(),
-      isSending: false,
+      messages: messages,
+      isSending: nextIsSending,
     );
   }
 
   void _onDomMessage(Map<String, dynamic> event) {
     final raw = event['message'] as Map<String, dynamic>?;
     if (raw == null) return;
+    final msg = MirrorMessage.fromJson(raw);
+    final isAssistant = msg.role == MessageRole.assistant;
     state = state.copyWith(
-      messages: [...state.messages, MirrorMessage.fromJson(raw)],
-      isSending: false,
+      messages: [...state.messages, msg],
+      // 只有出现 assistant 消息时才设 true，出现用户消息不改变 isSending
+      isSending: isAssistant || state.isSending,
     );
   }
 
@@ -397,6 +436,7 @@ void sendMessage(String text) {
   }
 
   void stopGeneration() {
+    state = state.copyWith(isSending: false);
     if (_bridgeClient != null) {
       _bridgeClient!.stopGeneration();
     } else {

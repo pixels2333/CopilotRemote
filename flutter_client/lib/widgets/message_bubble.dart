@@ -94,9 +94,10 @@ class MessageBubble extends StatelessWidget {
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: message.blocks.map((block) {
-                return _buildBlock(block, colorScheme);
-              }).toList(),
+              children: message.blocks
+                  .map((block) => _buildBlock(block, colorScheme))
+                  .where((w) => w is! SizedBox)
+                  .toList(),
             ),
           ),
         ],
@@ -107,15 +108,28 @@ class MessageBubble extends StatelessWidget {
   Widget _buildBlock(MirrorBlock block, ColorScheme colorScheme) {
     switch (block.type) {
       case BlockType.text:
+        if (_isFileChangeSummary(block.content)) {
+          return const SizedBox.shrink();
+        }
         return TextBlockView(block: block);
       case BlockType.thinking:
         return ThinkingBlockView(block: block);
       case BlockType.codeBlock:
         return CodeBlockView(block: block);
       case BlockType.toolCall:
+        if (block.toolName == 'read' || block.toolName == 'edit') {
+          return const SizedBox.shrink();
+        }
         return ToolCallBlockView(block: block);
       case BlockType.artifact:
         return ArtifactBlockView(block: block);
     }
   }
+
+
+  bool _isFileChangeSummary(String text) {
+    final trimmed = text.trim();
+    return RegExp(r'[\w\\/\.-]+\.\w+.*\+\d+.*-\d+').hasMatch(trimmed);
+  }
+
 }

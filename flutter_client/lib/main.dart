@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'screens/chat_screen.dart';
+import 'screens/main_shell.dart';
 import 'providers/settings_provider.dart';
 
 void main() {
@@ -44,7 +44,7 @@ class CopilotMirrorApp extends ConsumerWidget {
         fontFamily: 'sans-serif',
       ),
       themeMode: settings.themeMode,
-      home: const ChatScreen(),
+      home: const MainShell(),
     );
   }
 }

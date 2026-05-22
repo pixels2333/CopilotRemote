@@ -10,7 +10,6 @@ import '../widgets/session_drawer.dart';
 import '../widgets/agent_chip.dart';
 import '../widgets/glass_container.dart';
 import '../theme/vscode_colors.dart';
-import 'settings_screen.dart';
 
 class ChatScreen extends ConsumerWidget {
   const ChatScreen({super.key});
@@ -21,7 +20,7 @@ class ChatScreen extends ConsumerWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
-      extendBodyBehindAppBar: true,
+      extendBodyBehindAppBar: false,
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(kToolbarHeight),
         child: GlassContainer(
@@ -34,82 +33,96 @@ class ChatScreen extends ConsumerWidget {
           child: AppBar(
             backgroundColor: Colors.transparent,
             elevation: 0,
-            title: Row(
-              children: [
-                Container(
-                  width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    gradient: const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: VSCodeColors.copilotGradient,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: VSCodeColors.accentCopilot.withOpacity(0.3),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.blur_on_rounded,
-                      size: 20,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Copilot Mirror',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: -0.5,
+            title: InkWell(
+              onTap: chatState.connectionStatus == ConnectionStatus.connected
+                  ? () => _showSessionDrawer(context, ref)
+                  : null,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: VSCodeColors.copilotGradient,
                         ),
-                      ),
-                      if (chatState.activeSessionId != null)
-                        Text(
-                          (chatState.activeSessionId!.split('_').tryGet(1) as String?)
-                              ?.replaceAll('_', ' ') ?? 'Default Session',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            color: colorScheme.primary.withOpacity(0.8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: VSCodeColors.accentCopilot.withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
                           ),
-                          overflow: TextOverflow.ellipsis,
+                        ],
+                      ),
+                      child: const Center(
+                        child: Icon(
+                          Icons.blur_on_rounded,
+                          size: 20,
+                          color: Colors.white,
                         ),
-                    ],
-                  ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            'Copilot Mirror',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: -0.5,
+                            ),
+                          ),
+                          if (chatState.activeSessionId != null)
+                            Text(
+                              (chatState.activeSessionId!.split('_').length > 1
+                                      ? chatState.activeSessionId!.split('_')[1]
+                                      : 'Default Session')
+                                  .replaceAll('_', ' '),
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: colorScheme.primary.withOpacity(0.9),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (chatState.connectionStatus == ConnectionStatus.connected)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          size: 16,
+                          color: colorScheme.onSurface.withOpacity(0.3),
+                        ),
+                      ),
+                  ],
                 ),
-                _ConnectionDot(
-                  status: chatState.connectionStatus,
-                  colorScheme: colorScheme,
-                ),
-              ],
+              ),
             ),
             actions: [
+              _ConnectionDot(
+                status: chatState.connectionStatus,
+                colorScheme: colorScheme,
+              ),
+              const SizedBox(width: 8),
               if (chatState.connectionStatus == ConnectionStatus.connected)
                 const AgentChip(),
               const SizedBox(width: 4),
               // Action buttons with subtle backgrounds
-              _AppBarAction(
-                icon: Icons.settings_outlined,
-                tooltip: '设置',
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                  );
-                },
-              ),
               _AppBarAction(
                 icon: Icons.refresh_rounded,
                 tooltip: '刷新/重新同步',
@@ -129,9 +142,10 @@ class ChatScreen extends ConsumerWidget {
       ),
       body: Stack(
         children: [
-          // Background decoration if any, otherwise just full body
           Column(
             children: [
+              _buildContextLabel(context, ref, chatState, colorScheme),
+              const ConnectionStatusBar(),
               Expanded(
                 child: _buildBody(context, ref, chatState, colorScheme),
               ),
@@ -143,11 +157,40 @@ class ChatScreen extends ConsumerWidget {
             bottom: 0,
             child: ChatComposer(),
           ),
-          Positioned(
-            top: MediaQuery.of(context).padding.top + kToolbarHeight,
-            left: 0,
-            right: 0,
-            child: const ConnectionStatusBar(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContextLabel(
+    BuildContext context,
+    WidgetRef ref,
+    ChatState chatState,
+    ColorScheme colorScheme,
+  ) {
+    final contextText = chatState.inputContext?['text'] as String?;
+    if (contextText == null || contextText.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      width: double.infinity,
+      color: colorScheme.surfaceContainer.withOpacity(0.7),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline_rounded,
+              size: 14, color: colorScheme.primary.withOpacity(0.8)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              contextText,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: colorScheme.onSurface.withOpacity(0.6),
+              ),
+            ),
           ),
         ],
       ),
@@ -267,8 +310,8 @@ class ChatScreen extends ConsumerWidget {
     return Stack(
       children: [
         ListView.builder(
-          padding: EdgeInsets.only(
-            top: MediaQuery.of(context).padding.top + kToolbarHeight + 8,
+          padding: const EdgeInsets.only(
+            top: 8,
             bottom: 110,
           ),
           itemCount: chatState.messages.length,
@@ -279,7 +322,7 @@ class ChatScreen extends ConsumerWidget {
         ),
         if (chatState.errorMessage != null)
           Positioned(
-            top: MediaQuery.of(context).padding.top + kToolbarHeight + 10,
+            top: 10,
             left: 0,
             right: 0,
             child: Material(
@@ -318,53 +361,6 @@ class ChatScreen extends ConsumerWidget {
   void _refresh(WidgetRef ref) {
     final notifier = ref.read(chatProvider.notifier);
     notifier.refresh();
-  }
-
-  /// Show settings dialog to configure CDP connection
-  Future<void> _showSettingsDialog(BuildContext context, WidgetRef ref) async {
-    final settings = ref.read(settingsProvider);
-    final controller = TextEditingController(text: settings.bridgeUrl);
-    final formKey = GlobalKey<FormState>();
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('CDP 连接设置'),
-        content: Form(
-          key: formKey,
-          child: TextFormField(
-            controller: controller,
-            decoration: const InputDecoration(
-              labelText: 'CDP WebSocket URL',
-              hintText: 'ws://127.0.0.1:9229/devtools/page/...',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.link),
-            ),
-            validator: (v) {
-              if (v == null || v.isEmpty) return '请输入 WebSocket URL';
-              return null;
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (formKey.currentState!.validate()) {
-                final newUrl = controller.text.trim();
-                ref.read(settingsProvider.notifier).setBridgeUrl(newUrl);
-                Navigator.pop(ctx);
-              }
-            },
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
   }
 
   Future<void> _showSessionDrawer(BuildContext context, WidgetRef ref) async {

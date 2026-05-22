@@ -223,8 +223,43 @@ class DomObserver {
 
   static String buildStopGenerationScript() => r'''
 (() => {
-  const sel = ['button[aria-label*="stop" i]', 'button[aria-label*="cancel" i]', '.chat-stop-button', '[aria-label*="Stop Generation"]'];
-  for (const s of sel) { const el = document.querySelector(s); if (el instanceof HTMLElement) { el.click(); return JSON.stringify({ ok: true }); } }
+  // Strategy 1: find the working chat input container and look for stop/cancel action
+  const container = document.querySelector('.chat-input-container.working');
+  if (container) {
+    const actions = container.querySelectorAll('a.action-label, button, [role="button"], .monaco-button, .action-label');
+    for (const el of actions) {
+      if (el instanceof HTMLElement && el.offsetParent !== null) {
+        const label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').toLowerCase();
+        if (/stop|cancel|取消/.test(label) || el.querySelector('.codicon-stop, .codicon-stop-circle')) {
+          el.click();
+          return JSON.stringify({ ok: true, selector: 'working_container_action' });
+        }
+      }
+    }
+  }
+  // Strategy 2: broad selectors covering all common VS Code stop button variants
+  const sel = [
+    'button[aria-label*="stop" i]', 'button[aria-label*="cancel" i]',
+    'button[title*="stop" i]', 'button[title*="cancel" i]',
+    'a[aria-label*="取消" i]', 'a[aria-label*="stop" i]', 'a[aria-label*="cancel" i]',
+    'a[title*="stop" i]', 'a[title*="cancel" i]',
+    '[role="button"][aria-label*="stop" i]', '[role="button"][aria-label*="cancel" i]',
+    '[role="button"][title*="stop" i]', '[role="button"][title*="cancel" i]',
+    '.action-label[aria-label*="stop" i]', '.action-label[aria-label*="cancel" i]',
+    '.action-label[title*="stop" i]', '.action-label[title*="cancel" i]',
+    '.monaco-button[aria-label*="stop" i]', '.monaco-button[aria-label*="cancel" i]',
+    '.chat-stop-button', '.codicon-stop', '.codicon-stop-circle',
+    '[aria-label*="Stop Generation"]'
+  ];
+  for (const s of sel) {
+    const els = document.querySelectorAll(s);
+    for (const el of els) {
+      if (el instanceof HTMLElement && el.offsetParent !== null) {
+        el.click();
+        return JSON.stringify({ ok: true, selector: s });
+      }
+    }
+  }
   return JSON.stringify({ ok: false, reason: 'stop_button_not_found' });
 })();
 ''';

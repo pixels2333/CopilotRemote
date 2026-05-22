@@ -16,6 +16,7 @@ enum BridgeEventType {
   slashList,
   agentList,
   agentSwitched,
+  inputContext,
   error,
 }
 
@@ -97,6 +98,9 @@ class BridgeClient {
         break;
       case 'session.delta':
         eventType = BridgeEventType.delta;
+        break;
+      case 'input.context':
+        eventType = BridgeEventType.inputContext;
         break;
       case 'session.block':
         eventType = BridgeEventType.block;

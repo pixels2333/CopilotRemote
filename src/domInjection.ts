@@ -340,9 +340,24 @@ export function buildObserverScript(options: BridgeOptions): string {
 	// Emit full snapshot (used by both initial connect and polling)
 	function emitSnapshot() {
 		const messages = mergeIncrementalMessages(extractAll());
-		emit({ kind: 'snapshot', messages });
-		const fingerprints = window.__copilotMirrorState.messageFingerprints;
-		for (const m of messages) {
+	// Detect if VS Code is actively generating (session in progress)
+		try {
+			const ic = document.querySelector('.chat-input-container');
+			const hwc = ic instanceof HTMLElement && ic.classList.contains('working');
+			const ia = ic || document.querySelector('.interactive-session') || document.body;
+			const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], a[aria-label*="取消" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], .codicon-stop, .codicon-stop-circle, .chat-stop-button');
+			const iw = hwc || (sb instanceof HTMLElement && sb.offsetParent !== null);
+			if (iw && messages.length > 0) {
+				for (let i = messages.length - 1; i >= 0; i--) {
+					if (messages[i].role === 'assistant') {
+						messages[i].status = 'streaming';
+						const blk = messages[i].blocks;
+						if (blk && blk.length > 0) blk[blk.length - 1].status = 'streaming';
+						break;
+	}
+	}
+	}
+	} catch (_) {}
 			for (const b of m.blocks) {
 				if (typeof b.content === 'string') window.__copilotMirrorState.blockContent.set(b.id, b.content);
 			}
@@ -587,7 +602,24 @@ export function buildCurrentSnapshotScript(): string {
 				messages = merged;
 			}
 
-			return JSON.stringify({ ok: true, result: { messages } });
+			
+	// Detect if VS Code is actively generating (for stop button sync)
+	const ic = document.querySelector('.chat-input-container');
+	const hwc = ic instanceof HTMLElement && ic.classList.contains('working');
+	const ia = ic || document.querySelector('.interactive-session') || document.body;
+	const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], a[aria-label*="取消" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], .codicon-stop, .codicon-stop-circle, .chat-stop-button');
+	const iw = hwc || (sb instanceof HTMLElement && sb.offsetParent !== null);
+	if (iw && messages.length > 0) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+	if (messages[i].role === 'assistant') {
+	messages[i].status = 'streaming';
+	const blk = messages[i].blocks;
+	if (blk && blk.length > 0) blk[blk.length - 1].status = 'streaming';
+	break;
+	}
+	}
+	}
+return JSON.stringify({ ok: true, result: { messages } });
 		} catch (error) {
 			return JSON.stringify({ ok: false, reason: error instanceof Error ? error.message : String(error) });
 		}
@@ -659,9 +691,44 @@ export function buildFocusInputScript(): string {
  * Build stop-generation script.
  */
 export function buildStopGenerationScript(): string {
+	// Multi-strategy stop button detection that covers various VS Code versions.
 	return `(() => {
-		const sel = ['button[aria-label*="stop" i]', 'button[aria-label*="cancel" i]', '.chat-stop-button', '[aria-label*="Stop Generation"]'];
-		for (const s of sel) { const el = document.querySelector(s); if (el instanceof HTMLElement) { el.click(); return JSON.stringify({ ok: true }); } }
+		// Strategy 1: find the working chat input container and look for any stop-related action
+		const container = document.querySelector('.chat-input-container.working');
+		if (container) {
+			const actions = container.querySelectorAll('a.action-label, button, [role="button"], .monaco-button, .action-label');
+			for (const el of actions) {
+				if (el instanceof HTMLElement && el.offsetParent !== null) {
+					const label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').toLowerCase();
+					if (/stop|cancel|\\\\u53d6\\\\u6d88/.test(label) || el.querySelector('.codicon-stop, .codicon-stop-circle')) {
+						el.click();
+						return JSON.stringify({ ok: true, selector: 'working_container_action', label: label.slice(0, 20) });
+					}
+				}
+			}
+		}
+		// Strategy 2: broad selectors covering all common VS Code stop button variants
+		const sel = [
+			'button[aria-label*="stop" i]', 'button[aria-label*="cancel" i]',
+			'button[title*="stop" i]', 'button[title*="cancel" i]',
+			'a[aria-label*="\\\\u53d6\\\\u6d88" i]', 'a[aria-label*="stop" i]', 'a[aria-label*="cancel" i]',
+			'a[title*="stop" i]', 'a[title*="cancel" i]',
+			'[role="button"][aria-label*="stop" i]', '[role="button"][aria-label*="cancel" i]',
+			'[role="button"][title*="stop" i]', '[role="button"][title*="cancel" i]',
+			'.action-label[aria-label*="stop" i]', '.action-label[aria-label*="cancel" i]',
+			'.action-label[title*="stop" i]', '.action-label[title*="cancel" i]',
+			'.monaco-button[aria-label*="stop" i]', '.monaco-button[aria-label*="cancel" i]',
+			'.chat-stop-button', '.codicon-stop', '.codicon-stop-circle'
+		];
+		for (const s of sel) {
+			const els = document.querySelectorAll(s);
+			for (const el of els) {
+				if (el instanceof HTMLElement && el.offsetParent !== null) {
+					el.click();
+					return JSON.stringify({ ok: true, selector: s });
+				}
+			}
+		}
 		return JSON.stringify({ ok: false, reason: 'stop_button_not_found' });
 	})();
 	`.trim();

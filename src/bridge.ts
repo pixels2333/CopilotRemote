@@ -293,6 +293,11 @@ export class CopilotMirrorBridge {
 			}
 		}
 
+		// Strip agent-guide/autopilot suffix from inputContext text
+		if (event.inputContext?.text) {
+			const m = event.inputContext.text.match(/已更改\s*\d+\s*个文件\s*\+\d+\s*-\d+/);
+			event.inputContext = m ? { text: m[0] } : null;
+		}
 		this.wsGateway.broadcast('session.snapshot', {
 			mode: 'full',
 			cursor: { seq: this.seq, snapshotVersion: Date.now() },
@@ -303,7 +308,8 @@ export class CopilotMirrorBridge {
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString()
 			},
-			messages
+			messages,
+			inputContext: event.inputContext ?? null
 		});
 	}
 
@@ -322,11 +328,12 @@ export class CopilotMirrorBridge {
 
 		this.wsGateway.onStopGeneration = async () => {
 			await this.evaluateInCopilotPage(buildStopGenerationScript());
-		};
+		// Force snapshot immediately so Flutter client sees the updated state
+			setTimeout(() => void this.forceSnapshot(), 400);
+	};
 
-		this.wsGateway.onFocusInput = async () => {
-			await this.evaluateInCopilotPage(buildFocusInputScript());
-		};
+
+
 
 		this.wsGateway.onOpenArtifact = async (artifactId) => {
 			// Try to click the artifact via CDP

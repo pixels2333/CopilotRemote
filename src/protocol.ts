@@ -381,6 +381,8 @@ export interface BridgeDomEvent {
 	/** Session list data from DOM observer */
 	sessions?: Array<{ title: string; index: number; active: boolean; _domIndex: number }>;
 	activeTitle?: string;
+	/** Context label from VS Code input area (e.g. "已更改 29 个文件 +988 -166") */
+	inputContext?: { text: string } | null;
 }
 
 // ─── Bridge Configuration ────────────────────────────────────────
