@@ -311,25 +311,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
         m.status == MirrorStatus.streaming ||
         m.blocks.any((b) => b.status == MirrorStatus.streaming));
 
-    bool nextIsSending;
-    if (hasStreaming) {
-      nextIsSending = true;
-    } else if (!state.isSending) {
-      nextIsSending = false;
-    } else {
-      // 之前是发送中但快照没有 streaming 消息
-      // 只有看到至少一条 assistant 消息且全部完成时，才认为结束
-      final assistantMsgs = messages.where((m) => m.role == MessageRole.assistant);
-      if (assistantMsgs.isEmpty) {
-        // AI 还没开始回复，保持发送状态
-        nextIsSending = true;
-      } else {
-        // 所有 assistant 消息都结束了才算结束
-        nextIsSending = !assistantMsgs.every((m) =>
-            m.status == MirrorStatus.completed ||
-            m.status == MirrorStatus.error);
-      }
-    }
+    // 如果快照中有 streaming 消息，确认 isSending=true；
+    // 否则保持当前 isSending 不变（避免 forceSnapshot 过早复位）。
+    // 真正的复位由 _onMessageEnd 或 stopGeneration() 负责。
+    bool nextIsSending = hasStreaming ? true : state.isSending;
 
     state = state.copyWith(
       messages: messages,

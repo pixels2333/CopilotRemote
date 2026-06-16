@@ -82,11 +82,33 @@ class DomObserver {
     if (blocks.length===0) { const t=textOf(contents)||textOf(row); if(t) blocks.push({id:stableId('tx_',t.slice(0,64)),type:'text',status:'completed',format:'markdown',content:t,_fallback:true}); }
     return blocks;
   }
+  function isGenerating() {
+    // Detect if Copilot is currently generating a response
+    const container = document.querySelector('.chat-input-container.working');
+    if (container) return true;
+    const sel = ['button[aria-label*="stop" i]','button[aria-label*="cancel" i]','button[title*="stop" i]','button[title*="cancel" i]','a[aria-label*="\u53d6\u6d88" i]','a[aria-label*="stop" i]','a[aria-label*="cancel" i]','[role="button"][aria-label*="stop" i]','[role="button"][aria-label*="cancel" i]','.action-label[aria-label*="stop" i]','.action-label[aria-label*="cancel" i]','.chat-stop-button','.codicon-stop','.codicon-stop-circle'];
+    for (const s of sel) { const el = document.querySelector(s); if (el instanceof HTMLElement && el.offsetParent !== null) return true; }
+    return false;
+  }
   function extractAll() {
     const list = findList();
     if (list) {
       const rows = getRows(list);
-      if (rows.length>0) return rows.map((row,i)=>{const role=rowRole(row);const mid=stableId('msg_'+role,i+':'+role);const now=new Date().toISOString();return {id:mid,role,status:'completed',createdAt:now,updatedAt:now,blocks:extractBlocks(row,mid),metadata:{domIndex:i}};});
+      if (rows.length>0) {
+        const generating = isGenerating();
+        const msgs = rows.map((row,i)=>{const role=rowRole(row);const mid=stableId('msg_'+role,i+':'+role);const now=new Date().toISOString();return {id:mid,role,status:'completed',createdAt:now,updatedAt:now,blocks:extractBlocks(row,mid),metadata:{domIndex:i}};});
+        // If generating, mark the last assistant message as streaming
+        if (generating) {
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant') {
+              msgs[i].status = 'streaming';
+              for (const b of msgs[i].blocks) { if (b.status === 'completed') b.status = 'streaming'; }
+              break;
+            }
+          }
+        }
+        return msgs;
+      }
     }
     return [];
   }
@@ -180,6 +202,24 @@ class DomObserver {
     const merged=[];
     for(const m of messages){if(merged.length>0){const p=merged[merged.length-1];if(p.role===m.role){const pt=p.blocks.map(b=>typeof b.content==='string'?b.content:'').join('');const ct=m.blocks.map(b=>typeof b.content==='string'?b.content:'').join('');if(pt.length>0&&ct.startsWith(pt)){merged[merged.length-1]={...p,blocks:m.blocks};continue;}}}merged.push(m);}
     messages=merged;
+
+    // Detect if VS Code is actively generating (for stop button sync)
+    const ic = document.querySelector('.chat-input-container');
+    const hwc = ic instanceof HTMLElement && ic.classList.contains('working');
+    const ia = ic || document.querySelector('.interactive-session') || document.body;
+    const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], button[title*="stop" i], button[title*="cancel" i], a[aria-label*="\u53d6\u6d88" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], a[title*="stop" i], a[title*="cancel" i], [role="button"][aria-label*="stop" i], [role="button"][aria-label*="cancel" i], [role="button"][title*="stop" i], [role="button"][title*="cancel" i], .action-label[aria-label*="stop" i], .action-label[aria-label*="cancel" i], .action-label[title*="stop" i], .action-label[title*="cancel" i], .monaco-button[aria-label*="stop" i], .monaco-button[aria-label*="cancel" i], .chat-stop-button, .codicon-stop, .codicon-stop-circle');
+    const iw = hwc || (sb instanceof HTMLElement && sb.offsetParent !== null);
+    if (iw && messages.length > 0) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant') {
+          messages[i].status = 'streaming';
+          const blk = messages[i].blocks;
+          if (blk && blk.length > 0) blk[blk.length - 1].status = 'streaming';
+          break;
+        }
+      }
+    }
+
     return JSON.stringify({ok:true,result:{messages}});
   } catch(e) {
     return JSON.stringify({ok:false,reason:e instanceof Error?e.message:String(e)});

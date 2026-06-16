@@ -128,6 +128,7 @@ class _ChatComposerState extends ConsumerState<ChatComposer> {
     final isConnected =
         chatState.connectionStatus == ConnectionStatus.connected;
     _isSending = chatState.isSending;
+    final isSending = _isSending;
     final colorScheme = Theme.of(context).colorScheme;
 
     // Auto-unfocus when disconnected

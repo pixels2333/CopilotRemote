@@ -221,19 +221,39 @@ export function buildObserverScript(options: BridgeOptions): string {
 		return blocks;
 	}
 
+	/* ── Detect if Copilot is generating ── */
+	function isGenerating() {
+		const container = document.querySelector('.chat-input-container.working');
+		if (container) return true;
+		const sel = ['button[aria-label*="stop" i]', 'button[aria-label*="cancel" i]', 'button[title*="stop" i]', 'button[title*="cancel" i]', 'a[aria-label*="\u53d6\u6d88" i]', 'a[aria-label*="stop" i]', 'a[aria-label*="cancel" i]', '[role="button"][aria-label*="stop" i]', '[role="button"][aria-label*="cancel" i]', '.action-label[aria-label*="stop" i]', '.action-label[aria-label*="cancel" i]', '.chat-stop-button', '.codicon-stop', '.codicon-stop-circle'];
+		for (const s of sel) { const el = document.querySelector(s); if (el instanceof HTMLElement && el.offsetParent !== null) return true; }
+		return false;
+	}
+
 	/* ── Extract all messages ── */
 	function extractAll() {
 		const list = findList();
 		if (list) {
 			const rows = getRows(list);
 			if (rows.length > 0) {
-				return rows.map((row, i) => {
+				const generating = isGenerating();
+				const msgs = rows.map((row, i) => {
 					const role = rowRole(row);
 					const t = textOf(row);
 					const mid = stableId('msg_' + role, i + ':' + role);
 					const now = new Date().toISOString();
 					return { id: mid, role, status: 'completed', createdAt: now, updatedAt: now, blocks: extractBlocks(row, mid), metadata: { domIndex: i } };
 				});
+				if (generating) {
+					for (let i = msgs.length - 1; i >= 0; i--) {
+						if (msgs[i].role === 'assistant') {
+							msgs[i].status = 'streaming';
+							for (const b of msgs[i].blocks) { if (b.status === 'completed') b.status = 'streaming'; }
+							break;
+						}
+					}
+				}
+				return msgs;
 			}
 		}
 
@@ -340,12 +360,14 @@ export function buildObserverScript(options: BridgeOptions): string {
 	// Emit full snapshot (used by both initial connect and polling)
 	function emitSnapshot() {
 		const messages = mergeIncrementalMessages(extractAll());
-	// Detect if VS Code is actively generating (session in progress)
+
+		// Detect if VS Code is actively generating (session in progress)
 		try {
-			const ic = document.querySelector('.chat-input-container');
+			const aux = document.getElementById('workbench.parts.auxiliarybar');
+			const ic = document.querySelector('.chat-input-container') || (aux ? aux.querySelector('.chat-input-container') : null);
 			const hwc = ic instanceof HTMLElement && ic.classList.contains('working');
-			const ia = ic || document.querySelector('.interactive-session') || document.body;
-			const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], a[aria-label*="取消" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], .codicon-stop, .codicon-stop-circle, .chat-stop-button');
+			const searchRoot = aux || document.body;
+			const sb = searchRoot.querySelector('.action-label.codicon-stop-circle, .action-label.codicon-stop, .codicon-stop, .codicon-stop-circle, .chat-stop-button, button[aria-label*="stop" i], button[aria-label*="cancel" i], button[title*="stop" i], button[title*="cancel" i], a[aria-label*="\u53d6\u6d88" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], a[title*="stop" i], a[title*="cancel" i], [role="button"][aria-label*="stop" i], [role="button"][aria-label*="cancel" i], [role="button"][title*="stop" i], [role="button"][title*="cancel" i], .action-label[aria-label*="stop" i], .action-label[aria-label*="cancel" i], .action-label[title*="stop" i], .action-label[title*="cancel" i], .monaco-button[aria-label*="stop" i], .monaco-button[aria-label*="cancel" i]');
 			const iw = hwc || (sb instanceof HTMLElement && sb.offsetParent !== null);
 			if (iw && messages.length > 0) {
 				for (let i = messages.length - 1; i >= 0; i--) {
@@ -354,10 +376,14 @@ export function buildObserverScript(options: BridgeOptions): string {
 						const blk = messages[i].blocks;
 						if (blk && blk.length > 0) blk[blk.length - 1].status = 'streaming';
 						break;
-	}
-	}
-	}
-	} catch (_) {}
+					}
+				}
+			}
+		} catch (_) {}
+
+		emit({ kind: 'snapshot', messages });
+		const fingerprints = window.__copilotMirrorState.messageFingerprints;
+		for (const m of messages) {
 			for (const b of m.blocks) {
 				if (typeof b.content === 'string') window.__copilotMirrorState.blockContent.set(b.id, b.content);
 			}
@@ -607,7 +633,7 @@ export function buildCurrentSnapshotScript(): string {
 	const ic = document.querySelector('.chat-input-container');
 	const hwc = ic instanceof HTMLElement && ic.classList.contains('working');
 	const ia = ic || document.querySelector('.interactive-session') || document.body;
-	const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], a[aria-label*="取消" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], .codicon-stop, .codicon-stop-circle, .chat-stop-button');
+	const sb = ia.querySelector('button[aria-label*="stop" i], button[aria-label*="cancel" i], button[title*="stop" i], button[title*="cancel" i], a[aria-label*="取消" i], a[aria-label*="stop" i], a[aria-label*="cancel" i], a[title*="stop" i], a[title*="cancel" i], [role="button"][aria-label*="stop" i], [role="button"][aria-label*="cancel" i], [role="button"][title*="stop" i], [role="button"][title*="cancel" i], .action-label[aria-label*="stop" i], .action-label[aria-label*="cancel" i], .action-label[title*="stop" i], .action-label[title*="cancel" i], .monaco-button[aria-label*="stop" i], .monaco-button[aria-label*="cancel" i], .chat-stop-button, .codicon-stop, .codicon-stop-circle');
 	const iw = hwc || (sb instanceof HTMLElement && sb.offsetParent !== null);
 	if (iw && messages.length > 0) {
 	for (let i = messages.length - 1; i >= 0; i--) {
